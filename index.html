@@ -1000,14 +1000,16 @@ function stopAllTimers(){
 
 /* ----- minuteur de carte (un par exercice) ----- */
 const TIMED_KINDS=['chord','chords','scale','tab','fret'];
-const EX_EYEBROWS=['Exercice','Application','Échauffement','Le manche','Transition','Jeu libre','Révision','Pour ancrer','Le défi','Le final','Synthèse','Le lick','Mini-phrase','Le concept','La méthode','La science','Le protocole','La soudure','Section 2','Le juge','Le verdict','L’analyse','Personnalisation','Le chemin','La suite','Le concert'];
+const EX_EYEBROWS=['Exercice','Application','Échauffement','Le manche','Transition','Jeu libre','Révision','Pour ancrer','Le défi','Le final','Synthèse','Le lick','Mini-phrase','Le concept','La méthode','La science','Le protocole','La soudure','Section 2','Le juge','Le verdict','L’analyse','Personnalisation','Le chemin','La suite','Le concert','La structure','Le constat','À retenir','Pour aller plus loin'];
 function blockIsTimed(b){
   if(TIMED_KINDS.indexOf(b.kind)>=0) return true;
   if(b.kind==='text' && b.eyebrow && EX_EYEBROWS.indexOf(b.eyebrow)>=0) return true;
   return false;
 }
+const READ_EYEBROWS=['Le concept','La méthode','La science','Le protocole','La structure','Le constat','À retenir','Pour aller plus loin','Le chemin','La suite','Le verdict'];
 function defaultSecsFor(b){
   if(b.min) return b.min*60;
+  if(b.kind==='text' && READ_EYEBROWS.indexOf(b.eyebrow)>=0) return 75; // lecture : 1 min 15
   return ({text:180, chord:120, chords:240, scale:300, tab:240, fret:120})[b.kind] || 180;
 }
 function cardTimerHTML(id, secs){
@@ -2251,12 +2253,12 @@ const LESSONS = [
    ]},
 
   {kind:'text', eyebrow:'Exercice', num:'03',
-   title:'Aller-retour propre',
+   title:'Le jeu des fondamentales',
    body:[
-    'Monte la gamme note à note, puis redescends, **sans accélérer**. Cherche la **régularité**, pas la vitesse.',
-    'Quand c’est fluide, dis le nom des fondamentales à voix haute quand tu les joues. Tu mémorises la forme **et** la carte.'
+    'Nouvelle règle du jeu : ne joue QUE les **trois La** de la boîte (les pastilles laiton), en boucle, en les nommant. Ce sont tes ancres — le reste de la gamme s’organise autour d’elles.',
+    'Puis rejoue la gamme complète, mais **arrête-toi deux temps sur chaque La** : monte… pose-toi… repars. Ton oreille apprend où est la maison.'
    ],
-   tips:['Au médiator : un coup vers le bas, un coup vers le haut (aller-retour). Ça paie énormément.']},
+   tips:['C’est l’inverse de l’exercice précédent : on ne balaie plus, on vise. Les deux gestes ensemble font un improvisateur.']},
 
   {kind:'tab', tab:{tempo:80, bpb:4, events:[
     {notes:[{s:0,f:5}], beats:0.5}, {notes:[{s:0,f:8}], beats:0.5},
@@ -4989,7 +4991,7 @@ LESSONS.push(
  tags:['Bilan','Méthode','Feedback'],
  intro:'Avant-dernière marche : l’enregistrement bilan. Une prise complète, comparée à tes toutes premières traces. C’est le jour où le progrès, invisible au quotidien, devient une évidence sonore.',
  blocks:[
-  {kind:'text', eyebrow:'Le protocole', num:'01',
+  {kind:'text', eyebrow:'Le protocole', num:'01', min:5,
    title:'La prise témoin',
    body:[
     'Enregistre AUJOURD’HUI, en une seule prise chacun : (1) le parcours de barrés du jour 120, (2) une minute de pentatonique improvisée avec voyage entre positions, (3) le couplet d’« Ajaccio », (4) 30 secondes de ce que tu veux — ta signature du moment.',
