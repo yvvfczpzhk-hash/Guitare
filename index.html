@@ -54,6 +54,38 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   font-family:'JetBrains Mono';font-size:13px;font-weight:700;color:var(--brass-hi);
   background:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:6px 12px;
 }
+.capobadge{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;letter-spacing:.12em;color:var(--brass-hi);background:rgba(216,162,74,.10);border:1px solid var(--brass-dim);border-radius:999px;padding:5px 10px}
+.capohint{flex-basis:100%;font-size:10.5px;letter-spacing:.08em;color:var(--brass-hi);opacity:.85}
+.lvlrow{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
+.evalbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
+.eval-q{font-size:12.5px;color:var(--bone3)}
+.eval-btns{display:flex;gap:8px}
+.evbtn{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;border-radius:999px;padding:8px 14px;border:1px solid var(--line);background:var(--ink3);color:var(--bone2);transition:.15s}
+.evbtn svg{width:14px;height:14px}
+.evbtn.ok:hover{border-color:rgba(143,185,138,.5)}
+.evbtn.ko:hover{border-color:rgba(201,84,59,.5)}
+.evalbar.rated-ok .evbtn.ok{background:rgba(143,185,138,.15);border-color:rgba(143,185,138,.55);color:#B5D9B0}
+.evalbar.rated-ko .evbtn.ko{background:rgba(201,84,59,.13);border-color:rgba(201,84,59,.55);color:#E09A87}
+.eval-rec{font-size:11px;color:var(--bone3);margin-left:auto}
+.eval-rec b{color:var(--brass-hi)}
+#bilanOverlay{position:fixed;inset:0;background:rgba(10,8,6,.82);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+#bilanOverlay.show{display:flex}
+.bilan-inner{max-width:420px;width:100%;max-height:86vh;overflow-y:auto}
+.bilan-card{background:linear-gradient(180deg,var(--ink2),#191510);border:1px solid var(--brass-dim);border-radius:16px;padding:22px 22px 18px;box-shadow:0 18px 40px -22px rgba(0,0,0,.8)}
+.bilan-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0 6px}
+.bstat{text-align:center;background:var(--ink3);border:1px solid var(--line);border-radius:12px;padding:12px 6px}
+.bstat .bv{font-size:26px;font-weight:700;color:var(--bone)}
+.bstat .bv small{font-size:12px;color:var(--bone3)}
+.bstat .bk{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone3);margin-top:3px}
+.bilan-recs{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.brec{display:flex;gap:10px;align-items:baseline;font-size:13px;color:var(--bone2);border-left:2px solid var(--brass-dim);padding-left:10px}
+.brec .mono{color:var(--brass-hi);font-weight:700;white-space:nowrap}
+.bilan-note{font-size:12.5px;color:var(--bone3);margin:8px 0 0}
+.bilan-next{font-size:13.5px;color:var(--bone2);margin:12px 0 0;padding-top:10px;border-top:1px dashed var(--line)}
+.mirror-ctrls{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
+.rec-on{background:linear-gradient(180deg,#E09A87,#C9543B)!important;box-shadow:0 8px 22px -10px rgba(201,84,59,.55)!important;animation:recpulse 1.6s ease-in-out infinite}
+@keyframes recpulse{0%,100%{opacity:1}50%{opacity:.75}}
+@media (prefers-reduced-motion:reduce){.rec-on{animation:none}}
 .streak svg{width:14px;height:14px}
 
 /* ---------- layout ---------- */
@@ -382,7 +414,7 @@ body.session-on{padding-bottom:calc(168px + env(safe-area-inset-bottom))}
 
 <header class="topbar">
   <div class="wordmark"><span class="dotp"></span>Corde</div>
-  <div class="streak" id="streakBadge"></div>
+  <div style="display:flex;align-items:center;gap:8px"><span class="capobadge" id="capoBadge" style="display:none"></span><div class="streak" id="streakBadge"></div></div>
 </header>
 
 <main>
@@ -428,6 +460,100 @@ const Store = {
   get(k){ try{ const v=localStorage.getItem(k); return v==null?null:JSON.parse(v);}catch(e){ return (k in this.mem)?this.mem[k]:null;} },
   set(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ this.mem[k]=v; } }
 };
+
+/* =========================================================
+   PRÉFÉRENCES — niveau (P6/P11) & capodastre (P11)
+========================================================= */
+const Prefs = {
+  level: Store.get('corde.level')||'std',            // 'doux' (−15% tempo) | 'std'
+  capo:  Math.max(0,Math.min(7,+(Store.get('corde.capo')||0))),
+  setLevel(v){ this.level=(v==='doux')?'doux':'std'; Store.set('corde.level',this.level); },
+  setCapo(v){ this.capo=Math.max(0,Math.min(7,Math.round(+v||0))); Store.set('corde.capo',this.capo); updateCapoBadge(); }
+};
+function lvlF(){ return Prefs.level==='doux' ? 0.85 : 1; }
+function lvlBpm(b,min,max){ return Math.max(min, Math.min(max, Math.round(b*lvlF()))); }
+function capoF(){ return Math.pow(2, Prefs.capo/12); }
+
+/* =========================================================
+   AUTO-ÉVALUATION (P4) — ✓ Propre / ✗ Forcé, records, redo
+========================================================= */
+const Evals = {
+  log(day, ok){ // tally du jour courant (pour le bilan)
+    const t=todayKeyISO(); const all=Store.get('corde.evals')||{};
+    const e=all[t]||{ok:0,ko:0}; ok?e.ok++:e.ko++; all[t]=e;
+    Store.set('corde.evals',all);
+  },
+  today(){ const all=Store.get('corde.evals')||{}; return all[todayKeyISO()]||{ok:0,ko:0}; }
+};
+function todayKeyISO(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+const Records = {
+  all(){ return Store.get('corde.records')||{}; },
+  get(key){ return this.all()[key]||null; },
+  set(key, rec){ const a=this.all(); a[key]=rec; Store.set('corde.records',a); },
+  fmtDate(iso){ return iso ? iso.slice(8,10)+'/'+iso.slice(5,7) : ''; }
+};
+const Redo = {
+  list(){ return Store.get('corde.redo')||[]; },
+  push(item){ // {day,title,kind,ref}
+    let l=this.list().filter(x=>!(x.day===item.day && x.title===item.title));
+    l.unshift(item); if(l.length>6) l=l.slice(0,6);
+    Store.set('corde.redo',l);
+  },
+  peek(n){ return this.list().slice(0,n); },
+  done(n){ Store.set('corde.redo', this.list().slice(n)); }
+};
+/* =========================================================
+   BILAN DE SEMAINE (P8) — pratique réelle, jamais temps d'écran
+========================================================= */
+function weekBilanData(week){
+  const d0=(week-1)*7+1, d1=week*7;
+  const log=(Store.get('corde.log')||[]).filter(x=>x.day>=d0 && x.day<=d1);
+  const doneDays=log.map(x=>x.day).sort((a,b)=>a-b);
+  const ok=log.reduce((a,x)=>a+(x.ok||0),0), ko=log.reduce((a,x)=>a+(x.ko||0),0);
+  const recs=Object.entries(Records.all()).map(([k,r])=>r)
+    .filter(r=>r.day>=d0 && r.day<=d1)
+    .sort((a,b)=>b.v-a.v).slice(0,4);
+  return {week:week, days:doneDays, ok:ok, ko:ko, recs:recs, redo:Redo.list().length};
+}
+function bilanHTML(B){
+  const rate = (B.ok+B.ko)>0 ? Math.round(100*B.ok/(B.ok+B.ko)) : null;
+  const wt = WEEK_TITLES[B.week-1]||('Semaine '+B.week);
+  const nt = WEEK_TITLES[B.week]||null;
+  let h='<div class="bilan-card">';
+  h+='<div class="card-eyebrow"><span class="eyebrow">Bilan de semaine</span></div>';
+  h+='<h2>'+wt+'</h2>';
+  h+='<div class="bilan-stats">';
+  h+='<div class="bstat"><div class="bv mono">'+B.days.length+'<small>/7</small></div><div class="bk">jours pratiqués</div></div>';
+  h+='<div class="bstat"><div class="bv mono">'+(rate!=null?rate+'<small>%</small>':'—')+'</div><div class="bk">jugés propres</div></div>';
+  h+='<div class="bstat"><div class="bv mono">'+B.recs.length+'</div><div class="bk">records battus</div></div>';
+  h+='</div>';
+  if(B.recs.length){
+    h+='<div class="bilan-recs">'+B.recs.map(r=>'<div class="brec"><span class="mono">'+r.v+' '+(r.u||'bpm')+'</span><span>'+(r.t||'')+'</span></div>').join('')+'</div>';
+  }
+  if(B.redo>0){ h+='<p class="bilan-note">'+B.redo+' exercice'+(B.redo>1?'s':'')+' jugé'+(B.redo>1?'s':'')+' « forcé » t\u2019attend'+(B.redo>1?'ent':'')+' en Revanche au prochain jour de révision.</p>'; }
+  else if(rate!=null){ h+='<p class="bilan-note">Rien en attente de revanche — la file est vide.</p>'; }
+  h+='<p class="bilan-note">On mesure ta pratique réelle : exercices tenus, jugements, tempos validés. Jamais le temps d\u2019écran.</p>';
+  if(nt){ h+='<p class="bilan-next">La suite : <strong>'+nt+'</strong></p>'; }
+  return h+'</div>';
+}
+function showBilanOverlay(week){
+  const B=weekBilanData(week);
+  let ov=document.getElementById('bilanOverlay');
+  if(!ov){ ov=document.createElement('div'); ov.id='bilanOverlay'; document.body.appendChild(ov); }
+  ov.innerHTML='<div class="bilan-inner">'+bilanHTML(B)
+    +'<button class="playbtn" id="bilanClose" style="margin:14px auto 0;display:flex">'+I.check+'<span>Continuer</span></button></div>';
+  ov.classList.add('show');
+  document.getElementById('bilanClose').onclick=()=>ov.classList.remove('show');
+  ov.onclick=(e)=>{ if(e.target===ov) ov.classList.remove('show'); };
+}
+
+function updateCapoBadge(){
+  const el=document.getElementById('capoBadge');
+  if(el){ if(Prefs.capo>0){ el.textContent='CAPO '+Prefs.capo; el.style.display=''; } else el.style.display='none'; }
+  const n=Prefs.capo;
+  const txt = n>0 ? ('Capo '+n+' — sonne '+(n===2?'un ton':(n+' demi-ton'+(n>1?'s':'')))+' plus haut') : '';
+  document.querySelectorAll('.capohint').forEach(h=>{ h.textContent=txt; h.style.display=txt?'':'none'; });
+}
 
 /* =========================================================
    MUSIQUE — accordage, notes
@@ -540,22 +666,33 @@ const CHORDS = {
 const CH_DISPLAY = {'G(b)':'G','A(b)':'A','B(a)':'B','C(a)':'C','D(a)':'D','Bm(e)':'Bm','GB':'G/B','DFs':'D/F#','CG':'C/G','D(c)':'D (forme C)','E(d)':'E (forme D)','A(gsh)':'A (forme G)','Ctri_o':'C (triade)','Ctri_5':'C (triade c.5)','Ctri_9':'C (triade c.9)','Amtri_o':'Am (triade)','Amtri_5':'Am (triade c.5)','Amtri_9':'Am (triade c.9)','Ftri':'F (triade)','Gtri':'G (triade)','Dtri':'D (triade)','Emtri':'Em (triade)','Ctri_m':'C (triade médiums)','Gtri_m':'G (triade médiums)','Amtri_m':'Am (triade médiums)'};
 const chordLabel = (k)=> CH_DISPLAY[k]||k;
 function chordFreqs(frets){
-  const out=[]; for(let s=0;s<6;s++){ if(frets[s]>=0) out.push(freqAt(s,frets[s])); } return out;
+  const cf=capoF(); const out=[]; for(let s=0;s<6;s++){ if(frets[s]>=0) out.push(freqAt(s,frets[s])*cf); } return out;
 }
 
 /* =========================================================
    MOTEUR AUDIO — synthèse de corde pincée (Karplus-Strong)
 ========================================================= */
 const Audio = {
-  ctx:null, master:null, comp:null, cache:new Map(),
+  ctx:null, master:null, comp:null, limiter:null, cache:new Map(),
+  boost: Math.min(3, Math.max(1, Store.get('corde.boost')||1)),
   ensure(){
     if(this.ctx) { if(this.ctx.state==='suspended') this.ctx.resume(); return; }
     const AC = window.AudioContext||window.webkitAudioContext;
     this.ctx = new AC();
     this.comp = this.ctx.createDynamicsCompressor();
     this.comp.threshold.value=-14; this.comp.ratio.value=3.2; this.comp.attack.value=.004; this.comp.release.value=.25;
-    this.master = this.ctx.createGain(); this.master.gain.value=0.9;
-    this.master.connect(this.comp); this.comp.connect(this.ctx.destination);
+    // limiteur final : autorise un boost jusqu'à ×3 sans saturation ni craquements
+    this.limiter = this.ctx.createDynamicsCompressor();
+    this.limiter.threshold.value=-1.5; this.limiter.knee.value=0; this.limiter.ratio.value=20;
+    this.limiter.attack.value=.001; this.limiter.release.value=.10;
+    this.master = this.ctx.createGain(); this.master.gain.value=0.9*this.boost;
+    this.master.connect(this.comp); this.comp.connect(this.limiter); this.limiter.connect(this.ctx.destination);
+  },
+  setBoost(v){
+    this.boost = Math.min(3, Math.max(1, Math.round(v*10)/10));
+    Store.set('corde.boost', this.boost);
+    if(this.ctx && this.master) this.master.gain.setTargetAtTime(0.9*this.boost, this.ctx.currentTime, 0.03);
+    return this.boost;
   },
   beep(n, freq){
     this.ensure(); if(!this.ctx) return;
@@ -704,6 +841,7 @@ const I={
   fork:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v7a3 3 0 0 0 6 0V3"/><path d="M12 13v8"/><circle cx="12" cy="21" r="1.4" fill="currentColor"/></svg>',
   grid:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>',
   wave:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-6 4 14 3-10 2 4h4"/></svg>',
+  vol:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6.5 9H3v6h3.5L11 19V5z" fill="currentColor" stroke="none"/><path d="M15 9a4.2 4.2 0 0 1 0 6"/><path d="M18 6.5a8.4 8.4 0 0 1 0 11"/></svg>',
   sparkle:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8z"/></svg>',
   rewind:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 6L4 12l7 6"/><path d="M20 6l-7 6 7 6"/></svg>',
   pause:'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="3.6" height="14" rx="1.3"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.3"/></svg>',
@@ -1000,14 +1138,16 @@ function stopAllTimers(){
 
 /* ----- minuteur de carte (un par exercice) ----- */
 const TIMED_KINDS=['chord','chords','scale','tab','fret'];
-const EX_EYEBROWS=['Exercice','Application','Échauffement','Le manche','Transition','Jeu libre','Révision','Pour ancrer','Le défi','Le final','Synthèse','Le lick','Mini-phrase','Le concept','La méthode','La science','Le protocole','La soudure','Section 2','Le juge','Le verdict','L’analyse','Personnalisation','Le chemin','La suite','Le concert'];
+const EX_EYEBROWS=['Exercice','Application','Échauffement','Le manche','Transition','Jeu libre','Révision','Pour ancrer','Le défi','Le final','Synthèse','Le lick','Mini-phrase','Le concept','La méthode','La science','Le protocole','La soudure','Section 2','Le juge','Le verdict','L’analyse','Personnalisation','Le chemin','La suite','Le concert','La structure','Le constat','À retenir','Pour aller plus loin'];
 function blockIsTimed(b){
   if(TIMED_KINDS.indexOf(b.kind)>=0) return true;
   if(b.kind==='text' && b.eyebrow && EX_EYEBROWS.indexOf(b.eyebrow)>=0) return true;
   return false;
 }
+const READ_EYEBROWS=['Le concept','La méthode','La science','Le protocole','La structure','Le constat','À retenir','Pour aller plus loin','Le chemin','La suite','Le verdict'];
 function defaultSecsFor(b){
   if(b.min) return b.min*60;
+  if(b.kind==='text' && READ_EYEBROWS.indexOf(b.eyebrow)>=0) return 75; // lecture : 1 min 15
   return ({text:180, chord:120, chords:240, scale:300, tab:240, fret:120})[b.kind] || 180;
 }
 function cardTimerHTML(id, secs){
@@ -1385,10 +1525,24 @@ function freePlayBlock(L){
     tips:['Aucune pression, aucune faute possible ici : amuse-toi.']
   };
 }
-function assembleBlocks(L){
+function revancheBlocks(){
+  const out=[];
+  Redo.peek(2).forEach((r,i)=>{
+    const src=LESSONS.find(l=>l.day===r.day); if(!src) return;
+    const asm=assembleBlocks(src,{noRevanche:true}); const kb=asm[r.idx]; if(!kb || !blockIsTimed(kb)) return;
+    const nb=JSON.parse(JSON.stringify(kb));
+    nb.eyebrow='Revanche'; nb.num='R'+(i+1);
+    nb.title='Revanche J'+r.day+' · '+(kb.title||r.title);
+    nb.body=['**Tu l\u2019avais jugé forcé** — c\u2019est le moment de le reprendre, plus lentement, et de le valider propre.'].concat(Array.isArray(kb.body)?kb.body.slice(0,1):(kb.body?[kb.body]:[]));
+    out.push(nb);
+  });
+  return out;
+}
+function assembleBlocks(L, opt){
   const out=[];
   const hasWarmup=(L.blocks||[]).some(b=>b.eyebrow==='Échauffement');
   if(!hasWarmup) out.push(warmupBlock(L));
+  if(!(opt&&opt.noRevanche) && (L.tags||[]).indexOf('Révision')>=0){ revancheBlocks().forEach(b=>out.push(b)); }
   const fb=fretboardBlock(L.day); if(fb) out.push(fb);
   (L.blocks||[]).forEach(b=>{
     out.push(b);
@@ -1520,10 +1674,36 @@ document.addEventListener('click',(e)=>{
 /* =========================================================
    RENDU D'UN BLOC (avec minuteur d'exercice)
 ========================================================= */
+function evalKeyOf(b, idx){
+  const t=(b.title||'exo').toLowerCase().replace(/[^a-z0-9àâéèêëîïôùûç]+/g,'-').slice(0,40);
+  return 'd'+(viewingDay||0)+'-'+idx+'-'+t;
+}
+function evalBarHTML(b, idx){
+  const key=evalKeyOf(b, idx);
+  const rec=Records.get(key);
+  const recTxt = rec ? ('Record : <b>'+rec.v+'</b> '+(rec.u||'bpm')+' · '+Records.fmtDate(rec.d)) : 'Pas encore de record';
+  return '<div class="evalbar" data-evalkey="'+key+'" data-idx="'+idx+'" data-day="'+(viewingDay||0)+'" data-title="'+String(b.title||'Exercice').replace(/"/g,'&quot;')+'">'
+    +'<span class="eval-q">Sois un juge intraitable — c\u2019était :</span>'
+    +'<div class="eval-btns">'
+    +'<button class="evbtn ok" data-eval="ok" aria-label="propre">'+I.check+'<span>Propre</span></button>'
+    +'<button class="evbtn ko" data-eval="ko" aria-label="forcé">✗<span>Forcé</span></button>'
+    +'</div>'
+    +'<span class="eval-rec mono" data-recfor="'+key+'">'+recTxt+'</span>'
+    +'</div>';
+}
+function blockIsRated(b){
+  // on juge les exercices, pas la lecture ; jamais l'échauffement (P10) ni le jeu libre (P9)
+  if(b.eyebrow==='Échauffement'||b.eyebrow==='Jeu libre') return false;
+  if(b.kind==='text'){
+    if((b.min||0)>=4) return true;
+    return /exercice|d\u00e9fi|entra\u00eenement|protocole|application|\u00e9preuve|duel|atelier|rituel/i.test(b.eyebrow||'');
+  }
+  return true;
+}
 function renderBlock(b, idx){
   let html=renderBlockInner(b, idx);
   if(html && blockIsTimed(b)){
-    const tw=cardTimerHTML('ct'+(++TID), defaultSecsFor(b));
+    const tw=cardTimerHTML('ct'+(++TID), defaultSecsFor(b)) + (blockIsRated(b)?evalBarHTML(b, idx):'');
     html=html.replace(/<\/div>\s*$/, tw+'</div>');
   }
   return html;
@@ -1540,7 +1720,7 @@ function renderBlockInner(b, idx){
     const c=CHORDS[b.chord]; const id='p'+(++PID);
     PLAYABLES[id]={type:'chord', frets:c.frets};
     let dia='<div class="diagram-wrap"><div class="chord-cell" data-chordplay="'+id+'"><div>'+renderChord(c.frets,c.fingers,c.barres)+'</div><span class="cname">'+(b.label||chordLabel(b.chord))+'</span></div></div>';
-    let bar='<div class="audiobar"><button class="playbtn" data-play="'+id+'">'+I.ear+'<span>Écouter l\'accord</span></button></div>';
+    let bar='<div class="audiobar"><button class="playbtn" data-play="'+id+'">'+I.ear+'<span>Écouter l\'accord</span></button><span class="capohint mono"></span></div>';
     return '<div class="card">'+ey+ttl+dia+bar+bodyHTML(b.body)+tipsHTML(b.tips)+'</div>';
   }
 
@@ -1551,11 +1731,11 @@ function renderBlockInner(b, idx){
       return '<div class="chord-cell" data-chordplay="'+cid+'"><div>'+renderChord(c.frets,c.fingers,c.barres)+'</div><span class="cname">'+chordLabel(name)+'</span></div>';
     }).join('');
     PLAYABLES[id]={type:'progression', chords:b.chords.map(n=>CHORDS[n].frets), perBeats:b.perBeats||2};
-    const tempo=b.tempo||70;
+    const tempo=lvlBpm(b.tempo||70,40,110);
     let bar='<div class="audiobar"><button class="playbtn" data-play="'+id+'">'+I.ear+'<span>Écouter l\'enchaînement</span></button>'
       +'<span class="tempo"><span>Tempo</span><input type="range" min="40" max="110" value="'+tempo+'" data-tempo="'+id+'"><span class="bpm mono" id="bpm_'+id+'">'+tempo+' bpm</span></span>'
       +'<button class="subbtn" data-loop="'+id+'">'+I.loop+'<span>Boucle</span></button>'
-      +'<button class="subbtn metrobtn" data-metro="'+id+'" data-bpm="'+tempo+'" data-beats="4">'+I.metro+'<span>Métronome</span></button></div>';
+      +'<button class="subbtn metrobtn" data-metro="'+id+'" data-bpm="'+tempo+'" data-beats="4">'+I.metro+'<span>Métronome</span></button><span class="capohint mono"></span></div>';
     PLAYABLES[id].tempo=tempo;
     return '<div class="card">'+ey+ttl+'<div class="chord-row">'+list+'</div>'+bar+bodyHTML(b.body)+tipsHTML(b.tips)+'</div>';
   }
@@ -1564,8 +1744,8 @@ function renderBlockInner(b, idx){
     const id='p'+(++PID);
     const rootPc=letToPc(b.root); const sc=SCALES[b.scale];
     const built=buildScale(rootPc, sc.iv, b.fret[0], b.fret[1], {names:b.names});
-    PLAYABLES[id]={type:'scale', events:built.events, refs:built.refs, tempo:b.tempo||92, loop:false, namesToggle:b.root, scale:b.scale, fret:b.fret};
-    const tempo=b.tempo||92;
+    PLAYABLES[id]={type:'scale', events:built.events, refs:built.refs, tempo:lvlBpm(b.tempo||92,50,160), loop:false, namesToggle:b.root, scale:b.scale, fret:b.fret};
+    const tempo=PLAYABLES[id].tempo;
     const cap = sc.name+' de '+b.root+' ('+NOTE_LAT[rootPc]+') · cases '+b.fret[0]+'–'+b.fret[1];
     let bar='<div class="audiobar"><button class="playbtn" data-play="'+id+'">'+I.ear+'<span>Écouter la gamme</span></button>'
       +'<span class="tempo"><span>Tempo</span><input type="range" min="50" max="160" value="'+tempo+'" data-tempo="'+id+'"><span class="bpm mono" id="bpm_'+id+'">'+tempo+' bpm</span></span>'
@@ -1581,8 +1761,8 @@ function renderBlockInner(b, idx){
   if(b.kind==='tab'){
     const id='p'+(++PID);
     const built=buildTab(b.tab);
-    PLAYABLES[id]={type:'tab', events:built.events, colInfo:built.colInfo, tempo:b.tab.tempo||90, loop:false};
-    const tempo=b.tab.tempo||90;
+    PLAYABLES[id]={type:'tab', events:built.events, colInfo:built.colInfo, tempo:lvlBpm(b.tab.tempo||90,50,150), loop:false};
+    const tempo=PLAYABLES[id].tempo;
     let bar='<div class="audiobar"><button class="playbtn" data-play="'+id+'">'+I.ear+'<span>Écouter</span></button>'
       +'<span class="tempo"><span>Tempo</span><input type="range" min="50" max="150" value="'+tempo+'" data-tempo="'+id+'"><span class="bpm mono" id="bpm_'+id+'">'+tempo+' bpm</span></span>'
       +'<button class="subbtn" data-loop="'+id+'">'+I.loop+'<span>Boucle</span></button>'
@@ -1641,6 +1821,16 @@ let viewingDay=null; // jour actuellement affiché dans l'onglet Aujourd'hui
 function markDone(day){
   const done=getDone();
   if(!done.includes(day)){ done.push(day); setDone(done); }
+  const L=LESSONS.find(l=>l.day===day);
+  if(L && (L.tags||[]).indexOf('Révision')>=0) Redo.done(2);
+  // journal du jour (pour le bilan de semaine)
+  const log=Store.get('corde.log')||[];
+  if(!log.some(x=>x.day===day)){
+    const e=Evals.today();
+    log.push({day:day, date:todayKeyISO(), ok:e.ok, ko:e.ko, title:L?L.title:''});
+    if(log.length>200) log.shift();
+    Store.set('corde.log',log);
+  }
   // streak
   const t=todayStr(), y=yestStr();
   const sd=Store.get('corde.streak')||{count:0,last:null};
@@ -1648,12 +1838,16 @@ function markDone(day){
   updateStreak();
 }
 function updateStreak(){
+  // P9 : le compteur pardonne — une absence ne détruit rien de visible.
   const sd=Store.get('corde.streak')||{count:0,last:null};
   const t=todayStr(), y=yestStr();
   let c=sd.count; if(sd.last && sd.last!==t && sd.last!==y) c=0;
+  const total=getDone().length;
   const el=document.getElementById('streakBadge');
-  if(c>0){ el.innerHTML=I.flame+c+' jour'+(c>1?'s':''); el.style.display=''; }
-  else { el.innerHTML=I.flame+'Commence'; el.style.display=''; }
+  if(c>1){ el.innerHTML=I.flame+c+' jours d\u2019affilée'; }
+  else if(total>0){ el.innerHTML=I.flame+total+' jour'+(total>1?'s':'')+' de pratique'; }
+  else { el.innerHTML=I.flame+'Commence'; }
+  el.style.display='';
 }
 
 /* =========================================================
@@ -1757,14 +1951,66 @@ document.addEventListener('click',(e)=>{
     return; }
   const mt=e.target.closest('[data-metro]');
   if(mt){ const id=mt.getAttribute('data-metro'); const beats=+mt.getAttribute('data-beats')||4; const sl=document.querySelector('[data-tempo="'+id+'"]'); const bpm=sl?+sl.value:(+mt.getAttribute('data-bpm')||90); exMetroToggle(id,bpm,beats); return; }
+  const ev=e.target.closest('[data-eval]');
+  if(ev){
+    const bar=ev.closest('.evalbar'); if(!bar) return;
+    const ok=ev.getAttribute('data-eval')==='ok';
+    const key=bar.getAttribute('data-evalkey');
+    const day=+bar.getAttribute('data-day')||viewingDay||0;
+    const idx=+bar.getAttribute('data-idx')||0;
+    const title=bar.getAttribute('data-title')||'Exercice';
+    Evals.log(day, ok);
+    // le curseur de tempo du bloc, s'il existe
+    const card=bar.closest('.card');
+    const slider=card?card.querySelector('input[data-tempo]'):null;
+    bar.classList.remove('rated-ok','rated-ko');
+    if(ok){
+      bar.classList.add('rated-ok');
+      if(slider){
+        const bpm=+slider.value;
+        const rec=Records.get(key);
+        if(!rec || bpm>rec.v){
+          Records.set(key,{v:bpm,u:'bpm',d:todayKeyISO(),t:title,day:day});
+          const r=bar.querySelector('[data-recfor]'); if(r) r.innerHTML='Record : <b>'+bpm+'</b> bpm · aujourd\u2019hui';
+          toast('Record : '+bpm+' bpm propre. La méthode des paliers dit : +4 bpm au prochain passage.');
+        } else {
+          toast('Propre \u2713 — record à battre : '+rec.v+' bpm.');
+        }
+      } else {
+        toast('Propre \u2713 — on avance.');
+      }
+    } else {
+      bar.classList.add('rated-ko');
+      if(slider){
+        const id=slider.getAttribute('data-tempo');
+        const min=+slider.min||40;
+        const nv=Math.max(min, Math.round(+slider.value*0.85));
+        slider.value=nv;
+        const lab=document.getElementById('bpm_'+id); if(lab) lab.textContent=nv+' bpm';
+        if(PLAYABLES[id]) PLAYABLES[id].tempo=nv;
+        if(activePlayId===id) Player.tempo=nv;
+        if(ExMetro.on && ExMetro.id===id) ExMetro.bpm=nv;
+        toast('Palier : tempo réduit à '+nv+' bpm. Refais-le plus lent, plus propre — il reviendra au jour de révision.');
+      } else {
+        toast('Noté. Cet exercice reviendra au prochain jour de révision.');
+      }
+      Redo.push({day:day, idx:idx, title:title});
+    }
+    return;
+  }
   const fin=e.target.closest('#finishBtn');
   if(fin){ const day=+fin.getAttribute('data-day'); const wasDone=getDone().includes(day);
     markDone(day);
-    if(!wasDone){ toast('Jour '+day+' validé. À demain !'); }
+    if(!wasDone){
+      if(day%7===0){ showBilanOverlay(day/7); }
+      else toast('Jour '+day+' validé. À demain !');
+    }
     fin.classList.add('done'); fin.innerHTML=I.check+'<span>Jour terminé — bravo !</span>';
     return; }
   const nx=e.target.closest('#nextBtn');
   if(nx){ const d=+nx.getAttribute('data-next'); openDay(d); return; }
+  const bw=e.target.closest('[data-bilanweek]');
+  if(bw){ showBilanOverlay(+bw.getAttribute('data-bilanweek')); return; }
   const dc=e.target.closest('[data-openday]');
   if(dc){ openDay(+dc.getAttribute('data-openday')); return; }
 });
@@ -1796,6 +2042,7 @@ function openDay(day){
   viewingDay=day;
   Player.stop(); activePlayId=null;
   document.getElementById('view-today').innerHTML=renderLesson(L);
+  updateCapoBadge();
   switchView('today');
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -1806,6 +2053,7 @@ function renderToday(){
   const el=document.getElementById('view-today');
   if(!L){ el.innerHTML='<div class="empty">'+I.sparkle+'<h2>Parcours terminé</h2><p>Tu as bouclé tous les jours. Continue avec les outils, ou recommence un jour pour réviser.</p></div>'; return; }
   el.innerHTML=renderLesson(L);
+  updateCapoBadge();
 }
 
 /* =========================================================
@@ -1820,6 +2068,8 @@ const WEEK_TITLES=[
 function renderPath(){
   const done=getDone(); const cur=LESSONS[currentDayIndex()];
   let h='<div class="path-head"><div class="eyebrow">Ton chemin</div><h1>Le parcours</h1><p>Un cours par jour. Tu peux revoir les jours passés ou prendre de l\'avance.</p></div>';
+  const lastFullWeek=Math.floor(Math.max(0,...done)/7);
+  if(lastFullWeek>=1){ h+='<button class="subbtn" id="lastBilan" data-bilanweek="'+lastFullWeek+'" style="display:flex;margin:0 auto 14px">'+I.wave+'<span>Revoir le bilan de la semaine '+lastFullWeek+'</span></button>'; }
   let lastWeek=-1;
   LESSONS.forEach(L=>{
     const wk=Math.floor((L.day-1)/7);
@@ -1839,6 +2089,21 @@ function renderPath(){
 ========================================================= */
 function renderTools(){
   let h='<div class="tools-head"><div class="eyebrow">Pour t\'entraîner</div><h1>Outils</h1></div>';
+  // volume
+  h+='<div class="tool"><h2>'+I.vol+'Volume du son</h2><p class="hint">Amplifie toutes les notes de l\'app (cordes, métronome, quiz). Un limiteur intégré garde le son propre, même à fond.</p>'
+    +'<div class="metro"><div class="metro-bpm" id="vVal">×1.0<small>AMPLIFICATION</small></div>'
+    +'<div class="metro-ctrls"><button class="rbtn" id="vMinus">−</button><input type="range" id="vRange" min="10" max="30" value="10"><button class="rbtn" id="vPlus">+</button></div>'
+    +'<button class="playbtn" id="vTest" style="margin-top:6px">'+I.play+'<span>Tester le niveau</span></button>'
+    +'</div></div>';
+  // niveau & capo
+  h+='<div class="tool"><h2>'+I.fork+'Niveau &amp; capodastre</h2><p class="hint">Le niveau ajuste les tempos proposés dans les leçons (−15 % en douceur). Le capo transpose le son des accords de l\'app pour coller à ta guitare capodastrée — parfait pour t\'accompagner dans TA tonalité de chant.</p>'
+    +'<div class="metro"><div class="lvlrow" role="group" aria-label="Niveau">'
+    +'<button class="chipbtn" id="lvlDoux">En douceur −15%</button>'
+    +'<button class="chipbtn" id="lvlStd">Confirmé</button></div>'
+    +'<div class="metro-bpm" id="capoVal">0<small>CAPO</small></div>'
+    +'<div class="metro-ctrls"><button class="rbtn" id="capoMinus" aria-label="capo moins">−</button><input type="range" id="capoRange" min="0" max="7" value="0" aria-label="position du capo"><button class="rbtn" id="capoPlus" aria-label="capo plus">+</button></div>'
+    +'<p class="hint" style="margin:8px 0 0">Le capo ne change ni l\'accordeur (on s\'accorde toujours à vide) ni les diagrammes : seuls les <strong>sons d\'accords</strong> montent. Note « capo X » sur tes grilles une fois la bonne tonalité trouvée.</p>'
+    +'</div></div>';
   // métronome
   h+='<div class="tool"><h2>'+I.metro+'Métronome</h2><p class="hint">Travaille en place. Commence lent, accélère seulement quand c\'est propre.</p>'
     +'<div class="metro"><div class="metro-bpm" id="mBpm">80<small>BPM</small></div>'
@@ -1850,6 +2115,15 @@ function renderTools(){
   // accordeur
   h+='<div class="tool"><h2>'+I.fork+'Accordeur à l\'oreille</h2><p class="hint">Appuie sur une corde pour entendre la note juste, puis accorde la tienne dessus (accordage standard).</p>'
     +'<div class="tuner-strings" id="tuner"></div></div>';
+  // enregistreur miroir
+  h+='<div class="tool"><h2>'+I.wave+'Miroir — enregistre-toi</h2><p class="hint">Trente secondes suffisent : joue, réécoute, compare avec la cible. Le retour objectif est le meilleur professeur. Rien n\'est analysé ni envoyé : l\'enregistrement reste sur ton téléphone et disparaît quand tu en refais un.</p>'
+    +'<div class="metro"><div class="metro-bpm" id="recTime">0:00<small>MIROIR</small></div>'
+    +'<div class="mirror-ctrls">'
+    +'<button class="playbtn" id="recBtn">'+I.play+'<span>Enregistrer</span></button>'
+    +'<button class="subbtn hidden" id="recPlay">'+I.ear+'<span>Réécouter</span></button>'
+    +'</div>'
+    +'<p class="hint hidden" id="recHint" style="margin:8px 0 0">Réécoute en juge intraitable : régularité, propreté, volume égal. Puis rejoue — et compare.</p>'
+    +'</div></div>';
   // explorateur d'accords
   h+='<div class="tool"><h2>'+I.grid+'Bibliothèque d\'accords</h2><p class="hint">Choisis un accord pour voir le doigté et l\'entendre.</p>'
     +'<div id="chordExp"></div></div>';
@@ -1857,7 +2131,86 @@ function renderTools(){
   h+='<div class="tool"><h2>'+I.wave+'Explorateur de gammes</h2><p class="hint">Choisis une note et une gamme, déplace-toi sur le manche, écoute.</p>'
     +'<div id="scaleExp"></div></div>';
   document.getElementById('view-tools').innerHTML=h;
-  initMetronome(); initTuner(); initChordExp(); initScaleExp();
+  initVolume(); initLevelCapo(); initMetronome(); initTuner(); initMirror(); initChordExp(); initScaleExp();
+}
+
+/* ----- volume (boost) ----- */
+function initVolume(){
+  const range=document.getElementById('vRange'), val=document.getElementById('vVal');
+  if(!range) return;
+  const show=v=>{ val.innerHTML='×'+v.toFixed(1)+'<small>AMPLIFICATION</small>'; range.value=Math.round(v*10); };
+  show(Audio.boost);
+  const apply=v=>show(Audio.setBoost(v));
+  range.oninput=()=>apply(+range.value/10);
+  document.getElementById('vMinus').onclick=()=>apply(Audio.boost-0.1);
+  document.getElementById('vPlus').onclick=()=>apply(Audio.boost+0.1);
+  document.getElementById('vTest').onclick=()=>{
+    Audio.ensure(); if(!Audio.ctx) return;
+    Audio.strum(chordFreqs(CHORDS['Em'].frets), Audio.ctx.currentTime+0.05, {dir:'down'});
+  };
+}
+
+/* ----- enregistreur miroir (P4 : comparaison A/B, jamais d'analyse) ----- */
+const Mirror={ rec:null, chunks:[], url:null, audio:null, on:false, t0:0, timer:null, playing:false };
+function mirrorFmt(ms){ const s=Math.floor(ms/1000); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+function initMirror(){
+  const btn=document.getElementById('recBtn'); if(!btn) return;
+  const pl=document.getElementById('recPlay'), tm=document.getElementById('recTime'), hint=document.getElementById('recHint');
+  const setTime=t=>{ tm.innerHTML=mirrorFmt(t)+'<small>MIROIR</small>'; };
+  const stopPlayback=()=>{ if(Mirror.audio){ Mirror.audio.pause(); Mirror.audio.currentTime=0; } Mirror.playing=false; pl.innerHTML=I.ear+'<span>Réécouter</span>'; };
+  btn.onclick=async()=>{
+    if(Mirror.on){ // stop
+      Mirror.on=false; clearInterval(Mirror.timer);
+      try{ Mirror.rec.stop(); }catch(e){}
+      btn.innerHTML=I.play+'<span>Enregistrer</span>'; btn.classList.remove('rec-on');
+      return;
+    }
+    stopPlayback();
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      Mirror.chunks=[];
+      Mirror.rec=new MediaRecorder(stream);
+      Mirror.rec.ondataavailable=e=>{ if(e.data && e.data.size) Mirror.chunks.push(e.data); };
+      Mirror.rec.onstop=()=>{
+        stream.getTracks().forEach(t=>t.stop());
+        if(Mirror.url) URL.revokeObjectURL(Mirror.url);
+        Mirror.url=URL.createObjectURL(new Blob(Mirror.chunks,{type:Mirror.rec.mimeType||'audio/webm'}));
+        Mirror.audio=new window.Audio(Mirror.url);
+        Mirror.audio.onended=stopPlayback;
+        pl.classList.remove('hidden'); hint.classList.remove('hidden');
+      };
+      Mirror.rec.start();
+      Mirror.on=true; Mirror.t0=Date.now(); setTime(0);
+      Mirror.timer=setInterval(()=>{ const el=Date.now()-Mirror.t0; setTime(el); if(el>=120000) btn.click(); },250);
+      btn.innerHTML=I.stop+'<span>Stop</span>'; btn.classList.add('rec-on');
+      pl.classList.add('hidden');
+    }catch(err){
+      toast('Micro indisponible — autorise l\u2019accès au micro pour utiliser le miroir.');
+    }
+  };
+  pl.onclick=()=>{
+    if(!Mirror.audio) return;
+    if(Mirror.playing){ stopPlayback(); return; }
+    Mirror.audio.play(); Mirror.playing=true;
+    pl.innerHTML=I.stop+'<span>Arrêter</span>';
+  };
+}
+
+/* ----- niveau & capo ----- */
+function initLevelCapo(){
+  const bD=document.getElementById('lvlDoux'), bS=document.getElementById('lvlStd');
+  if(!bD) return;
+  const paint=()=>{ bD.classList.toggle('on',Prefs.level==='doux'); bS.classList.toggle('on',Prefs.level!=='doux'); };
+  paint();
+  bD.onclick=()=>{ Prefs.setLevel('doux'); paint(); toast('Niveau « en douceur » : tempos −15 % sur les prochaines leçons ouvertes'); };
+  bS.onclick=()=>{ Prefs.setLevel('std'); paint(); toast('Niveau « confirmé » : tempos d\u2019origine'); };
+  const rng=document.getElementById('capoRange'), val=document.getElementById('capoVal');
+  const show=()=>{ val.innerHTML=Prefs.capo+'<small>CAPO</small>'; rng.value=Prefs.capo; };
+  show(); updateCapoBadge();
+  const set=v=>{ Prefs.setCapo(v); show(); if(Prefs.capo>0){ Audio.ensure(); if(Audio.ctx) Audio.strum(chordFreqs(CHORDS['Em'].frets),Audio.ctx.currentTime+0.04,{dir:'down'}); } };
+  rng.oninput=()=>set(+rng.value);
+  document.getElementById('capoMinus').onclick=()=>set(Prefs.capo-1);
+  document.getElementById('capoPlus').onclick=()=>set(Prefs.capo+1);
 }
 
 /* ----- métronome ----- */
@@ -2023,6 +2376,8 @@ function exMetroToggle(id, bpm, beats){
 }
 function switchView(v){
   Player.stop(); activePlayId=null; stopAllTimers(); exMetroStop();
+  if(Mirror.on){ Mirror.on=false; clearInterval(Mirror.timer); try{ Mirror.rec.stop(); }catch(e){} }
+  if(Mirror.audio && Mirror.playing){ Mirror.audio.pause(); Mirror.playing=false; }
   if(Metro.on){ Metro.on=false; clearInterval(Metro.timer); }
   document.querySelectorAll('.view').forEach(s=>s.classList.add('hidden'));
   document.getElementById('view-'+v).classList.remove('hidden');
@@ -2038,6 +2393,7 @@ document.getElementById('tabbar').addEventListener('click',(e)=>{ const b=e.targ
 ========================================================= */
 function boot(){
   updateStreak();
+  updateCapoBadge();
   renderToday();
 }
 </script>
@@ -2251,12 +2607,12 @@ const LESSONS = [
    ]},
 
   {kind:'text', eyebrow:'Exercice', num:'03',
-   title:'Aller-retour propre',
+   title:'Le jeu des fondamentales',
    body:[
-    'Monte la gamme note à note, puis redescends, **sans accélérer**. Cherche la **régularité**, pas la vitesse.',
-    'Quand c’est fluide, dis le nom des fondamentales à voix haute quand tu les joues. Tu mémorises la forme **et** la carte.'
+    'Nouvelle règle du jeu : ne joue QUE les **trois La** de la boîte (les pastilles laiton), en boucle, en les nommant. Ce sont tes ancres — le reste de la gamme s’organise autour d’elles.',
+    'Puis rejoue la gamme complète, mais **arrête-toi deux temps sur chaque La** : monte… pose-toi… repars. Ton oreille apprend où est la maison.'
    ],
-   tips:['Au médiator : un coup vers le bas, un coup vers le haut (aller-retour). Ça paie énormément.']},
+   tips:['C’est l’inverse de l’exercice précédent : on ne balaie plus, on vise. Les deux gestes ensemble font un improvisateur.']},
 
   {kind:'tab', tab:{tempo:80, bpb:4, events:[
     {notes:[{s:0,f:5}], beats:0.5}, {notes:[{s:0,f:8}], beats:0.5},
@@ -4989,7 +5345,7 @@ LESSONS.push(
  tags:['Bilan','Méthode','Feedback'],
  intro:'Avant-dernière marche : l’enregistrement bilan. Une prise complète, comparée à tes toutes premières traces. C’est le jour où le progrès, invisible au quotidien, devient une évidence sonore.',
  blocks:[
-  {kind:'text', eyebrow:'Le protocole', num:'01',
+  {kind:'text', eyebrow:'Le protocole', num:'01', min:5,
    title:'La prise témoin',
    body:[
     'Enregistre AUJOURD’HUI, en une seule prise chacun : (1) le parcours de barrés du jour 120, (2) une minute de pentatonique improvisée avec voyage entre positions, (3) le couplet d’« Ajaccio », (4) 30 secondes de ce que tu veux — ta signature du moment.',
