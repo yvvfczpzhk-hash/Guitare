@@ -502,7 +502,10 @@ test('« prête à jouer » : accord inconnu d’abord, puis le changement le pl
   ok(r3.bottleneck && r3.bottleneck.kind === 'section', 'il reste à jouer la chanson en entier : ' + JSON.stringify(r3.bottleneck));
   St.recordTake(s, { ex: 'chanson', params: {}, d: 3, judged: { y: 1, success: true, song: { id: song.id, sec: 0, ratio: 1, mode: 'r3', ok: true } } });
   const r4 = St.readiness(s, song);
-  ok(r4.score > 0.9 && !r4.bottleneck, 'tout en place : ' + r4.score + ' ' + JSON.stringify(r4.bottleneck));
+  ok(!r4.bottleneck && r4.score > 0.85 && r4.score < 0.95, 'accords pas encore vérifiés propres au micro : ' + r4.score);
+  ['G', 'Em', 'C', 'D'].forEach(id => St.chordUpdate(s, id, { clean: true }));
+  const r5 = St.readiness(s, song);
+  ok(r5.score > 0.97 && !r5.bottleneck, 'tout en place : ' + r5.score + ' ' + JSON.stringify(r5.bottleneck));
 });
 
 test('chanson : accords écrits sous « Capo N » = formes ; capo conseillé, transposition, sections en mesures', () => {
