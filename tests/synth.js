@@ -118,11 +118,13 @@ function addVoice(y, notes, amp, seed) {
     for (let h = 1; h <= H; h++) { const f = h * f0; let g = 0; for (const [fc, bw] of F) g += 1 / (1 + Math.pow((f - fc) / bw, 2)); amps.push((0.15 + g) / h); }
     let norm = 0; for (const a of amps) norm += a * a; norm = Math.sqrt(norm);
     const ph = amps.map(() => r() * 6.28);
+    let phase = 0;
     for (let i = a0; i < a1; i++) {
       const tt = (i - a0) / FS, env = Math.min(1, tt / 0.04, (a1 - i) / FS / 0.05);
-      const vib = 1 + 0.004 * Math.sin(2 * Math.PI * 5.2 * tt);
+      const vib = 1 + 0.004 * Math.sin(2 * Math.PI * 5.2 * tt);          // vibrato léger (±7 cents)
+      phase += 2 * Math.PI * f0 * vib / FS;
       let v = 0;
-      for (let h = 0; h < amps.length; h++) v += amps[h] * Math.sin(ph[h] + 2 * Math.PI * (h + 1) * f0 * vib * tt);
+      for (let h = 0; h < amps.length; h++) v += amps[h] * Math.sin(ph[h] + (h + 1) * phase);
       y[i] += amp * env * v / norm + amp * 0.02 * (r() * 2 - 1);
     }
   }

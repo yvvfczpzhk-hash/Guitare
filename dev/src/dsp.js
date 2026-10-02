@@ -429,85 +429,121 @@
     return a;
   }
   D.nnls = nnls;
-  /**
-   * Notes présentes dans une fenêtre [a, b) de la prise : spectre moyen → demi-tons → compression → NNLS.
-   * @returns {act (Float64Array 38–90), chroma (12), energy}
-   */
-  D.notesIn = function (x, a, b, o) {
+  /* Empreinte d'un doigté : spectre en demi-tons attendu (notes exactes, octaves comprises, harmoniques ~1/h,
+     graves atténués comme par un micro de téléphone), comprimé (puissance 0,7). Comparer le spectre observé à
+     ces empreintes distingue bien mieux les accords que leurs seuls chromas : les harmoniques naturelles des
+     cordes (quinte, tierce, septième « naturelle ») y figurent des deux côtés. */
+  const COMP = 0.7, H_ATOM = 8;
+  const atomCache = new Map();
+  function noteAtom(n, a4) {
+    const key = n + ':' + (a4 || 440); let at = atomCache.get(key); if (at) return at;
+    at = new Float64Array(NS);
+    for (let h = 1; h <= H_ATOM; h++) {
+      const m = n + 12 * Math.log2(h), i = m - MIDI_LO;
+      if (i > NS - 1) break;
+      const f = hz(n, a4) * h, mic = f < 110 ? 0.45 : f < 160 ? 0.75 : 1;
+      const amp = mic / h, lo = Math.floor(i), fr = i - lo;
+      if (lo >= 0) at[lo] += amp * (1 - fr);
+      if (lo + 1 < NS) at[lo + 1] += amp * fr;
+    }
+    atomCache.set(key, at);
+    return at;
+  }
+  const printCache = new Map();
+  D.voicingPrint = function (v, a4) {
+    const key = v.id + ':' + (a4 || 440); let p = printCache.get(key); if (p) return p;
+    const lin = new Float64Array(NS);
+    T.voicingNotes(v).forEach(n => { if (n == null) return; const at = noteAtom(n, a4); for (let i = 0; i < NS; i++) lin[i] += at[i]; });
+    p = lin.map(x => Math.pow(x, COMP));
+    printCache.set(key, p);
+    return p;
+  };
+  /** Spectre observé en demi-tons sur [a, b) (échantillons) : {lin (au-dessus du plancher), cmp (comprimé)} */
+  D.observe = function (x, a, b, o) {
     o = o || {};
-    const len = o.len || 4096, nfft = o.nfft || 8192;
+    // fenêtre la plus longue possible (la résolution sépare les demi-tons graves) : 8192 (0,37 s), 4096 ou 2048
+    const span = b - a, len = o.len || (span >= 8192 ? 8192 : span >= 4096 ? 4096 : 2048), nfft = Math.max(8192, len * 2);
     const spec = avgSpectrum(x, a, b, len, nfft);
     if (!spec) return null;
     const st = semitoneSpectrum(spec, nfft, o.a4);
-    // compression douce (racine) : les notes faibles comptent, sans que le bruit domine
-    const floor = percentile(st, 0.3);
-    const s = new Float64Array(NS);
-    let energy = 0;
-    for (let i = 0; i < NS; i++) { const v = Math.max(0, st[i] - floor); s[i] = Math.sqrt(v); energy += v * v; }
-    const act = nnls(s, o.iters);
-    const chroma = new Float64Array(12);
-    for (let k = 0; k < act.length; k++) chroma[(38 + k) % 12] += act[k];
-    let cs = 0; for (let i = 0; i < 12; i++) cs += chroma[i];
-    if (cs > 0) for (let i = 0; i < 12; i++) chroma[i] /= cs;
-    return { act, chroma, energy, st };
-  };
-  /** Chroma attendu d'une forme : chaque classe de hauteur pondérée par le nombre de cordes qui la jouent. */
-  D.voicingChroma = function (v) {
-    const c = new Float64Array(12);
-    T.voicingNotes(v).forEach(n => { if (n != null) c[n % 12] += 1; });
-    let s = 0; for (let i = 0; i < 12; i++) s += c[i];
-    for (let i = 0; i < 12; i++) c[i] /= s || 1;
-    return c;
+    const fl = percentile(st, 0.35);
+    const lin = st.map(v => Math.max(0, v - fl));
+    let e = 0; for (const v of lin) e += v * v;
+    return { lin, cmp: lin.map(v => Math.pow(v, COMP)), energy: e, len };
   };
   function cosine(a, b) {
     let ab = 0, aa = 0, bb = 0;
-    for (let i = 0; i < a.length; i++) { const x = Math.sqrt(a[i]), y = Math.sqrt(b[i]); ab += x * y; aa += x * x; bb += y * y; }
+    for (let i = 0; i < a.length; i++) { ab += a[i] * b[i]; aa += a[i] * a[i]; bb += b[i] * b[i]; }
     return aa > 0 && bb > 0 ? ab / Math.sqrt(aa * bb) : 0;
   }
   D.cosine = cosine;
   /**
-   * Quel accord a été joué ? Compare le chroma observé aux formes candidates.
-   * @returns {best (id), sim: {id: similarité}, margin, foreign: [pc], missing: [pc]}
+   * Quel accord, parmi des formes candidates, a été joué ? Similarité cosinus avec les empreintes.
+   * @returns {best (id), score, margin, sim: {id: similarité}}
    */
-  D.matchChord = function (notes, candidates) {
-    if (!notes) return null;
+  D.identify = function (obs, candidates, a4) {
+    if (!obs || !candidates.length) return null;
     const sim = {};
     let best = null, bs = -1, second = -1;
     for (const v of candidates) {
-      const s = cosine(notes.chroma, D.voicingChroma(v));
-      sim[v.id] = s;
-      if (s > bs) { second = bs; bs = s; best = v; } else if (s > second) second = s;
+      const sv = cosine(obs.cmp, D.voicingPrint(v, a4));
+      sim[v.id] = +sv.toFixed(4);
+      if (sv > bs) { second = bs; bs = sv; best = v; } else if (sv > second) second = sv;
     }
     return { best: best ? best.id : null, score: bs, margin: bs - Math.max(0, second), sim };
   };
+  /** Petite décomposition non négative (descente par coordonnées) sur quelques gabarits de notes. */
+  function fitNotes(atoms, o, iters) {
+    const K = atoms.length, a = new Float64Array(K), G = [], bv = [];
+    for (let p = 0; p < K; p++) { G.push(new Float64Array(K)); let v = 0; for (let i = 0; i < NS; i++) v += atoms[p][i] * o[i]; bv.push(v); }
+    for (let p = 0; p < K; p++) for (let q = 0; q < K; q++) { let v = 0; for (let i = 0; i < NS; i++) v += atoms[p][i] * atoms[q][i]; G[p][q] = v; }
+    for (let it = 0; it < (iters || 40); it++) for (let k = 0; k < K; k++) { let r = bv[k]; for (let q = 0; q < K; q++) if (q !== k) r -= G[k][q] * a[q]; a[k] = Math.max(0, r / (G[k][k] || 1e-12)); }
+    let res = 0, tot = 0;
+    for (let i = 0; i < NS; i++) { let f = 0; for (let k = 0; k < K; k++) f += a[k] * atoms[k][i]; res += (o[i] - f) * (o[i] - f); tot += o[i] * o[i]; }
+    return { a, rel: tot > 0 ? res / tot : 1 };
+  }
   /**
-   * Diagnostic d'un accord attendu : notes étrangères (avec la cause la plus probable : corde à vide
-   * au lieu d'une case appuyée, case voisine) et notes de l'accord qui manquent (avec les cordes concernées).
+   * Diagnostic d'un accord attendu (coup gratté) : erreurs typiques testées une à une — corde jouée à vide au lieu
+   * de sa case, case voisine, corde censée être étouffée qui sonne — et notes uniques absentes (corde étouffée).
+   * Une erreur n'est retenue que si elle explique nettement mieux le spectre que l'accord seul.
+   * @returns {foreign:[{s, kind, note}], missing:[{s, note}], fit}
    */
-  D.chordDiagnosis = function (notes, v) {
-    const exp = D.voicingChroma(v), obs = notes.chroma;
-    const pcsIn = new Set(T.voicingPcs(v));
-    const foreign = [], missing = [];
-    const maxObs = Math.max(...obs);
-    for (let pc = 0; pc < 12; pc++) {
-      if (!pcsIn.has(pc) && obs[pc] > Math.max(0.09, 0.32 * maxObs)) {
-        // cause probable : une corde censée être appuyée sonne à vide, ou une case voisine
-        const causes = [];
-        v.frets.forEach((f, s) => {
-          if (f > 0 && T.mod12(T.OPEN[s]) === pc) causes.push({ s, kind: 'open' });
-          else if (f > 0 && (T.mod12(T.OPEN[s] + f + 1) === pc || T.mod12(T.OPEN[s] + f - 1) === pc)) causes.push({ s, kind: 'fret' });
-          else if (f < 0 && T.mod12(T.OPEN[s]) === pc) causes.push({ s, kind: 'mute' });
-        });
-        foreign.push({ pc, w: obs[pc], causes });
-      }
+  D.chordDiagnosis = function (obs, v, a4, exclude) {
+    if (!obs || obs.len < 8192) return { foreign: [], missing: [], fit: null, short: true };   // trop court : pas de diagnostic fiable
+    const notes = T.voicingNotes(v);
+    const base = [], idx = [];
+    notes.forEach((n, s) => { if (n != null) { base.push(noteAtom(n, a4)); idx.push(s); } });
+    const o = obs.lin;
+    const f0 = fitNotes(base, o);
+    const foreign = [];
+    const tries = [];
+    v.frets.forEach((f, s) => {
+      if (f > 0) { tries.push({ s, kind: 'open', note: T.OPEN[s] }); tries.push({ s, kind: 'fret+1', note: T.OPEN[s] + f + 1 }); if (f > 1) tries.push({ s, kind: 'fret-1', note: T.OPEN[s] + f - 1 }); }
+      else if (f < 0) tries.push({ s, kind: 'mute', note: T.OPEN[s] });
+    });
+    for (const tr of tries) {
+      if (notes.some(n => n != null && (n === tr.note))) continue;           // déjà une note de l'accord
+      if (exclude && exclude.includes(tr.note)) continue;                     // note qui peut traîner de l'accord précédent
+      const fit = fitNotes(base.concat([noteAtom(tr.note, a4)]), o);
+      const gain = f0.rel - fit.rel, w = fit.a[fit.a.length - 1];
+      const share = w / Math.max(1e-12, Math.max(...fit.a));
+      if (gain > 0.035 && share > 0.25) foreign.push(Object.assign({ gain: +gain.toFixed(3), share: +share.toFixed(2) }, tr));
     }
-    for (let pc = 0; pc < 12; pc++) {
-      if (exp[pc] > 0 && obs[pc] < 0.22 * exp[pc] && obs[pc] < 0.05) {
-        const strings = []; T.voicingNotes(v).forEach((n, s) => { if (n != null && n % 12 === pc) strings.push(s); });
-        missing.push({ pc, strings });
-      }
-    }
-    return { foreign, missing };
+    foreign.sort((p, q) => q.gain - p.gain);
+    // une même corde : ne garder que l'explication la plus nette
+    const seen = new Set(), fr = foreign.filter(e => { if (seen.has(e.s)) return false; seen.add(e.s); return true; });
+    // notes uniques (pas d'octave dans l'accord, pas d'harmonique d'une autre corde) dont le poids est très faible
+    const missing = [];
+    const amax = Math.max(...f0.a);
+    idx.forEach((s, k) => {
+      const n = notes[s];
+      const dup = notes.some((m, j) => m != null && j !== s && (m % 12 === n % 12));
+      const harm = notes.some((m, j) => m != null && j !== s && [12, 19, 24, 28].includes(n - m));
+      if (!dup && !harm && f0.a[k] < 0.12 * amax) missing.push({ s, note: n });
+    });
+    // l'explication la plus nette d'abord ; une seconde seulement si elle est presque aussi nette
+    const keep = fr.length > 1 && fr[1].gain >= 0.8 * fr[0].gain ? fr.slice(0, 2) : fr.slice(0, 1);
+    return { foreign: keep.filter(e => e.gain >= 0.06 && e.share >= 0.4), missing, fit: +(1 - f0.rel).toFixed(3) };
   };
 
   /* ---------------------------------------------------------------- caractéristiques d'un coup */
@@ -652,19 +688,20 @@
       const iois = []; for (let i = 1; i < fr.length; i++) { const de = fr[i].t - fr[i - 1].t; if (de > 0) iois.push((fr[i].err - fr[i - 1].err)); }
       res.drift.ioiSd = iois.length > 2 ? std(iois) : NaN;
     }
-    // accords par segment (mesure) : spectre moyen hors attaques
+    // accords par segment (mesure) : spectre moyen hors attaques, comparé aux accords attendus de l'exercice
     if (spec.segments && spec.segments.length) {
-      const cands = (spec.vocab && spec.vocab.length ? spec.vocab : []).slice();
+      const cand = [];
+      const add = id => { const v = T.voicing(id); if (v && !cand.some(c => c.id === v.id)) cand.push(v); };
+      spec.segments.forEach(sg => add(sg.v)); (spec.vocab || []).forEach(v => add(v.id || v));
       res.chords = spec.segments.map(sg => {
-        const a = (sg.t0 + L + 0.04) * FS, b = (sg.t1 + L - 0.01) * FS;
-        const notes = D.notesIn(x, a, b, { a4: spec.a4 });
         const v = T.voicing(sg.v);
-        if (!notes || !v) return { v: sg.v, ok: null };
-        const list = cands.some(c => c.id === v.id) ? cands : cands.concat([v]);
-        const m = D.matchChord(notes, list);
-        const simExp = m.sim[v.id];
-        const ok = simExp >= 0.78 && (m.best === v.id || simExp >= m.score - 0.015);
-        return { v: sg.v, ok, sim: +simExp.toFixed(3), heard: m.best, diag: ok ? null : D.chordDiagnosis(notes, v) };
+        const obs = D.observe(x, (sg.t0 + L + 0.04) * FS, (sg.t1 + L - 0.01) * FS, { a4: spec.a4 });
+        if (!obs || !v) return { v: sg.v, ok: null };
+        const m = D.identify(obs, cand, spec.a4);
+        const sv = m.sim[v.id];
+        const ok = m.best === v.id || sv >= m.score - 0.01;
+        const dg = D.chordDiagnosis(obs, v, spec.a4);
+        return { v: sg.v, ok, sim: sv, heard: m.best, foreign: dg.foreign, missing: dg.missing };
       });
     }
     return res;
@@ -682,27 +719,34 @@
     const res = { ok: !issues.includes('silence'), issues, snr: +lv.snr.toFixed(1) };
     if (!res.ok) return Object.assign(res, { strums: [], changes: 0, cpm: 0 });
     const va = T.voicing(spec.a), vb = T.voicing(spec.b);
-    const on = D.onsets(x, { hop: 0.008, combine: 0.12, rel: 0.12 });
+    const on = D.onsets(x, { hop: 0.008, combine: 0.12 });
     const ons = on.list.filter(o => o.t >= (spec.t0 || 0) && o.t <= (spec.t1 || Infinity));
-    const ca = D.voicingChroma(va), cb = D.voicingChroma(vb);
-    res.strums = ons.map((o, i) => {
-      const next = ons[i + 1];
-      const a = (o.t + 0.04) * FS, b = Math.min(x.length, ((next ? next.t : o.t + 0.6) - 0.01) * FS, (o.t + 0.7) * FS);
-      const notes = D.notesIn(x, a, b, { len: 2048, nfft: 8192, a4: spec.a4 });
-      if (!notes) return { t: o.t, chord: null };
-      const sa = cosine(notes.chroma, ca), sb = cosine(notes.chroma, cb);
-      const best = Math.max(sa, sb);
-      const chord = best >= 0.74 && Math.abs(sa - sb) >= 0.025 ? (sa > sb ? 'a' : 'b') : null;
-      return { t: o.t, chord, sa: +sa.toFixed(3), sb: +sb.toFixed(3) };
+    const vMed = median(ons.map(o => o.v));
+    res.strums = ons.filter(o => o.v >= 0.25 * vMed).map((o, i, arr) => {
+      const next = arr[i + 1];
+      const obs = D.observe(x, (o.t + 0.04) * FS, Math.min(((next ? next.t : o.t + 0.6) - 0.01), o.t + 0.7) * FS, { a4: spec.a4 });
+      if (!obs) return { t: o.t, chord: null };
+      const m = D.identify(obs, [va, vb], spec.a4);
+      const sa = m.sim[va.id], sb = m.sim[vb.id];
+      const chord = Math.max(sa, sb) >= 0.6 && m.margin >= 0.02 ? (sa > sb ? 'a' : 'b') : null;
+      // accord reconnu mais pas propre : corde à vide au lieu d'une case, case voisine, note unique absente
+      const other = chord === 'a' ? vb : va;
+      const dg = chord ? D.chordDiagnosis(obs, chord === 'a' ? va : vb, spec.a4, T.voicingNotes(other).filter(n => n != null)) : null;
+      return { t: o.t, chord, sa, sb, sim: Math.max(sa, sb), foreign: dg ? dg.foreign : [], missing: dg ? dg.missing : [] };
     });
-    // compte : un changement propre = un coup reconnu dont l'accord diffère du dernier reconnu
-    let last = null, changes = 0, unclear = 0, repeats = 0;
+    // une note étrangère nette (corde à vide au lieu d'une case, case voisine) : le changement ne compte pas ;
+    // une note unique absente est signalée (indice plus faible) sans retirer le changement
+    res.strums.forEach(z => { z.clean = !!z.chord && !z.foreign.length; });
+    // compte : un changement propre = un coup reconnu, propre, dont l'accord diffère du dernier coup reconnu
+    let last = null, changes = 0, unclear = 0, repeats = 0, flawed = 0;
     for (const s of res.strums) {
       if (!s.chord) { unclear++; continue; }
+      if (!s.clean) { flawed++; last = s.chord; continue; }
       if (last && s.chord !== last) changes++;
       else if (last && s.chord === last) repeats++;
       last = s.chord;
     }
+    res.flawed = flawed;
     const dur = Math.max(1, (spec.t1 || x.length / FS) - (spec.t0 || 0));
     Object.assign(res, { changes, unclear, repeats, cpm: changes * 60 / dur, dur });
     return res;
@@ -727,13 +771,14 @@
       const o = on.list.find(z => z.t > t + 0.12 && z.t < Math.min(nextCue, t + c.limit + 1.2));
       if (!o) return { v: c.v, hit: false };
       const after = on.list.find(z => z.t > o.t + 0.08);
-      const notes = D.notesIn(x, (o.t + 0.04) * FS, Math.min((after ? after.t : o.t + 0.7) - 0.01, o.t + 0.7) * FS, { len: 2048, nfft: 8192, a4: spec.a4 });
+      const obs = D.observe(x, (o.t + 0.04) * FS, Math.min((after ? after.t : o.t + 0.7) - 0.01, o.t + 0.7) * FS, { a4: spec.a4 });
       const v = T.voicing(c.v);
-      const list = (spec.vocab || []).some(z => z.id === v.id) ? spec.vocab : (spec.vocab || []).concat([v]);
-      const m = notes ? D.matchChord(notes, list) : null;
+      const list = (spec.vocab || []).filter(z => z && z.id !== v.id).concat([v]);
+      const m = obs ? D.identify(obs, list, spec.a4) : null;
       const sim = m ? m.sim[v.id] : 0;
-      const ok = !!m && sim >= 0.78 && (m.best === v.id || sim >= m.score - 0.015);
-      return { v: c.v, hit: true, rt: +(o.t - t).toFixed(3), ok, inTime: o.t - t <= c.limit, heard: m ? m.best : null, sim: +sim.toFixed(3), diag: !ok && notes ? D.chordDiagnosis(notes, v) : null };
+      const ok = !!m && (m.best === v.id || sim >= m.score - 0.01) && sim >= 0.6;
+      const dg = obs ? D.chordDiagnosis(obs, v, spec.a4) : null;
+      return { v: c.v, hit: true, rt: +(o.t - t).toFixed(3), ok, inTime: o.t - t <= c.limit, heard: m ? m.best : null, sim, foreign: dg ? dg.foreign : [], missing: dg ? dg.missing : [] };
     });
     return res;
   };
@@ -742,9 +787,9 @@
   /**
    * L'élève joue chaque corde de l'accord, de la plus grave à la plus aiguë. Pour chaque attaque :
    * la note nouvelle (spectre après − spectre avant, pour ignorer les cordes qui sonnent encore),
-   * sa hauteur, sa tenue (étouffée ?) et le bruit entre harmoniques (frise ?).
+   * sa hauteur et sa tenue (étouffée ?). La frisure, elle, s'écoute : l'appli la demande après la prise.
    * spec : {v (id), a4}
-   * @returns {strings:[{s, exp, got, cents, status: ok|muted|wrong|missing|buzz, sustain}], clean}
+   * @returns {strings:[{s, exp, got, cents, status: ok|muted|wrong|missing, sustain}], clean}
    */
   D.analyzePlucks = function (pcm, sr, spec) {
     const prep = D.prepare(pcm, sr), x = prep.x, lv = D.levels(x);
@@ -816,10 +861,6 @@
       else if (isNum(sus) && sus < -24) status = 'muted';
       return { s: e.s, exp: e.n, got, cents: isNum(cents) ? Math.round(cents) : null, share: +share.toFixed(2), sustain: isNum(sus) ? +sus.toFixed(1) : null, status, t: +inf.o.t.toFixed(3) };
     });
-    // frise : bruit hors harmoniques 1,5–5 kHz nettement au-dessus de la médiane de la prise
-    const buzz = res.strings.map(st => (st.status === 'ok' ? buzzIndex(x, st.t, hz(st.got, a4)) : NaN));
-    const bMed = median(buzz.filter(isNum));
-    res.strings.forEach((st, q) => { if (st.status === 'ok' && isNum(buzz[q]) && buzz[q] > Math.max(0.06, 3 * bMed)) { st.status = 'buzz'; st.buzz = +buzz[q].toFixed(3); } });
     res.clean = res.strings.length > 0 && res.strings.every(st => st.status === 'ok');
     res.nOk = res.strings.filter(st => st.status === 'ok').length;
     return res;
@@ -854,19 +895,6 @@
     const e2 = harmonicEnergy(x, Math.round(late * FS) - len, len, f, 4096);
     return isNum(e1) && isNum(e2) ? dB(e2) - dB(e1) : NaN;
   }
-  function buzzIndex(x, t, f) {
-    const a = Math.round((t + 0.05) * FS), len = 2048;
-    if (a + len > x.length) return NaN;
-    const m = magSpectrum(x, a, len, 4096), df = FS / 4096;
-    let harm = 0, res = 0;
-    for (let k = Math.round(1500 / df); k <= Math.round(5000 / df); k++) {
-      const h = k * df / f, dist = Math.abs(h - Math.round(h)) * f / df;
-      if (dist <= 2.5) harm += m[k] * m[k]; else res += m[k] * m[k];
-    }
-    let low = 0; for (let k = Math.round(f * 0.8 / df); k <= Math.round(f * 4.2 / df); k++) low += m[k] * m[k];
-    return res / Math.max(1e-12, harm + low);
-  }
-
   /* ---------------------------------------------------------------- hauteur (YIN) */
   /**
    * YIN sur une trame (n'importe quelle fréquence d'échantillonnage). fmin–fmax en Hz.
@@ -919,25 +947,42 @@
     const a = Math.round((strongest.t + 0.25) * FS), len = 16384, nfft = 32768;
     if (a + len > x.length) return null;
     const m = magSpectrum(x, a, len, nfft), df = FS / nfft;
-    const HARM = [[2, 1], [2, 1], [2, 1], [1, 2], [2, 1], [1, 2]];
+    const HARM = [[2, 1], [2, 1], [2, 1], [1, 2], [2, 3, 1], [2, 3, 1]];       // harmoniques peu partagées (accord en quartes)
     const floorAt = k => { const v = []; for (let q = k - 60; q <= k + 60; q += 6) if (q > 0 && q < m.length) v.push(m[q]); return median(v); };
-    return T.OPEN.map((n, s) => {
-      const f = hz(n, a4);
-      let num = 0, den = 0, conf = 0;
-      for (const h of HARM[s]) {
-        const fh = f * h, k0 = Math.floor(fh * Math.pow(2, -0.55 / 12) / df), k1 = Math.ceil(fh * Math.pow(2, 0.55 / 12) / df);
-        let kk = -1, mv = 0; for (let k = k0; k <= k1; k++) if (m[k] > mv) { mv = m[k]; kk = k; }
-        if (kk < 1) continue;
-        const A = Math.log(m[kk - 1] + 1e-12), B = Math.log(m[kk] + 1e-12), C = Math.log(m[kk + 1] + 1e-12);
+    // pics (maxima locaux) d'une fenêtre ±55 cents, fréquence affinée (interpolation parabolique du log)
+    const peaksNear = fh => {
+      const k0 = Math.floor(fh * Math.pow(2, -0.55 / 12) / df), k1 = Math.ceil(fh * Math.pow(2, 0.55 / 12) / df), out = [];
+      for (let k = Math.max(2, k0); k <= Math.min(m.length - 2, k1); k++) {
+        if (!(m[k] > m[k - 1] && m[k] >= m[k + 1])) continue;
+        const A = Math.log(m[k - 1] + 1e-12), B = Math.log(m[k] + 1e-12), C = Math.log(m[k + 1] + 1e-12);
         const dl = clamp((A - C) / (2 * (A - 2 * B + C) || 1), -0.5, 0.5);
-        const fr = (kk + dl) * df / h;
-        const prom = mv / (floorAt(kk) + 1e-12);
-        if (prom < 6) continue;
-        const w = Math.log(prom) * (h === HARM[s][0] ? 1.3 : 1);
-        num += w * 1200 * Math.log2(fr / f); den += w; conf = Math.max(conf, prom);
+        out.push({ f: (k + dl) * df, mag: m[k], prom: m[k] / (floorAt(k) + 1e-12) });
       }
-      return { s, cents: den ? +(num / den).toFixed(1) : null, conf: +Math.min(1, Math.log10(conf + 1) / 2.5).toFixed(2) };
-    });
+      return out;
+    };
+    // consensus entre harmoniques : les partiels d'une même corde donnent tous le même écart (en cents) ; un partiel
+    // d'une autre corde qui tombe dans la fenêtre donne un écart incohérent — on retient l'écart le mieux « voté ».
+    const solve = s => {
+      const f = hz(T.OPEN[s], a4), cands = [];
+      HARM[s].forEach((h, hi) => peaksNear(f * h).forEach(p => { if (p.prom >= 6) cands.push({ h, c: 1200 * Math.log2(p.f / h / f), w: Math.log(p.prom) * (hi === 0 ? 1.3 : 1), prom: p.prom }); }));
+      if (!cands.length) return { s, cents: null, conf: 0 };
+      let best = null, bs = -1;
+      for (const c0 of cands) {
+        let sc = 0;
+        for (const h of HARM[s]) { let bw = 0; for (const c of cands) if (c.h === h) bw = Math.max(bw, c.w * Math.exp(-Math.pow(c.c - c0.c, 2) / 18)); sc += bw; }
+        if (sc > bs) { bs = sc; best = c0; }
+      }
+      let num = 0, den = 0, conf = 0, nh = 0;
+      for (const h of HARM[s]) {
+        const near = cands.filter(c => c.h === h && Math.abs(c.c - best.c) < 6);
+        if (!near.length) continue;
+        const c = near.reduce((x, y) => (y.w > x.w ? y : x));
+        num += c.w * c.c; den += c.w; conf = Math.max(conf, c.prom); nh++;
+      }
+      return { s, cents: den ? +(num / den).toFixed(1) : null, conf: +Math.min(1, Math.log10(conf + 1) / 2.5 * (nh >= 2 ? 1 : 0.7)).toFixed(2) };
+    };
+    const est = [0, 1, 2, 3, 4, 5].map(solve);
+    return est;
   };
 
   /* ---------------------------------------------------------------- voix (mélodie, tessiture) */
@@ -953,7 +998,9 @@
       let e = 0; for (let j = 0; j < W; j++) { const v = x[i * hop + j]; fr[j] = v; e += v * v; }
       en[i] = e / W; t[i] = (i * hop + W / 2) / FS;
     }
-    const thrE = Math.max(percentile(en, 0.2) * 20, 1e-7);
+    // seuil d'énergie : bien au-dessus du bruit de fond (3e centile), ou 40 dB sous le maximum
+    let emax = 0; for (let i = 0; i < n; i++) if (en[i] > emax) emax = en[i];
+    const thrE = Math.max(percentile(en, 0.03) * 8, emax * 1e-4, 1e-9);
     for (let i = 0; i < n; i++) {
       if (en[i] < thrE) { midi[i] = NaN; continue; }
       for (let j = 0; j < W; j++) fr[j] = x[i * hop + j];
