@@ -196,6 +196,9 @@
     V('Em', 'Em', [0, 2, 2, 0, 0, 0], [0, 2, 3, 0, 0, 0], 0.8, { tags: ['open'] }),
     V('Dm', 'Dm', [-1, -1, 0, 2, 3, 1], [0, 0, 0, 2, 3, 1], 2.3, { tags: ['open'] }),
     V('Bm', 'Bm', [-1, 2, 4, 4, 3, 2], [0, 1, 3, 4, 2, 1], 6.2, { tags: ['barre'], barre: { fret: 2, from: 1, to: 5 } }),
+    // préparation au barré : l'index couche 3 puis 4 cordes en case 5 (cordes plus souples qu'en case 1)
+    V('Am-b3', 'Am', [-1, -1, -1, 5, 5, 5], [0, 0, 0, 1, 1, 1], 2.6, { tags: ['barre-prep'], barre: { fret: 5, from: 3, to: 5 }, variant: 'petit barré 3 cordes, case 5' }),
+    V('Am7-b4', 'Am7', [-1, -1, 5, 5, 5, 5], [0, 0, 1, 1, 1, 1], 3.4, { tags: ['barre-prep'], barre: { fret: 5, from: 2, to: 5 }, variant: 'barré 4 cordes, case 5' }),
     V('Bm-mini', 'Bm', [-1, -1, 4, 4, 3, 2], [0, 0, 3, 4, 2, 1], 4.4, { tags: ['open', 'mini'], variant: '4 cordes' }),
     V('F#m', 'F#m', [2, 4, 4, 2, 2, 2], [1, 3, 4, 1, 1, 1], 6.3, { tags: ['barre'], barre: { fret: 2, from: 0, to: 5 } }),
     V('C#m', 'C#m', [-1, 4, 6, 6, 5, 4], [0, 1, 3, 4, 2, 1], 6.5, { tags: ['barre'], barre: { fret: 4, from: 1, to: 5 } }),
@@ -509,6 +512,7 @@
   // Le balancier : en croches, D sur les temps et U sur les « et » ; en doubles, D sur les croches, U entre.
   const SP = (id, name, sig, sub, slots, o) => Object.assign({ id, name, sig, sub, slots }, o || {});
   T.STRUMS = [
+    SP('r0', 'Un coup par accord', 4, 2, 'D.......', { d: 0.2, family: 'base', desc: 'Un seul coup au début de chaque mesure, et on laisse sonner : idéal pour apprendre une grille.' }),
     SP('r1', 'Noires', 4, 2, 'D.D.D.D.', { d: 0.5, family: 'base', desc: 'Un coup vers le bas sur chaque temps : la pulsation pure.' }),
     SP('r2', 'Croches', 4, 2, 'DUDUDUDU', { d: 1.4, family: 'base', desc: 'Bas sur les temps, haut sur les « et » : le balancier ne s’arrête jamais.' }),
     SP('r3', 'Folk', 4, 2, 'D.DUD.DU', { d: 1.6, family: 'folk', desc: '« Bas, bas-haut, bas, bas-haut » : la base du folk.' }),
@@ -563,6 +567,8 @@
   // Arpèges : p = pouce (basse), P = basse alternée, i/m/a = cordes 3/2/1 ; « pa » = pincé (deux notes ensemble).
   const PP = (id, name, sig, sub, toks, o) => Object.assign({ id, name, sig, sub, toks }, o || {});
   T.PICKS = [
+    PP('f0', 'Pouce seul (basse alternée)', 4, 2, ['p', '.', 'P', '.', 'p', '.', 'P', '.'], { d: 1.0, desc: 'Le pouce seul, une basse par temps, en alternant deux cordes : le socle de tout le jeu aux doigts.' }),
+    PP('f0b', 'Pouce puis doigts', 4, 2, ['p', '.', 'i', '.', 'm', '.', 'i', '.'], { d: 1.5, desc: 'Une note par temps : pouce, index, majeur, index.' }),
     PP('f1', 'Arpège p-i-m-a', 4, 2, ['p', 'i', 'm', 'a', 'p', 'i', 'm', 'a'], { d: 2.2, desc: 'Pouce sur la basse, puis index, majeur, annulaire.' }),
     PP('f2', 'Arpège aller-retour', 4, 2, ['p', 'i', 'm', 'a', 'm', 'i', 'm', 'i'], { d: 2.6, desc: 'On monte, on redescend : idéal pour les ballades.' }),
     PP('f3', 'Folk p-i-m-i', 4, 2, ['p', 'i', 'm', 'i', 'P', 'i', 'm', 'i'], { d: 3.2, desc: 'Basse alternée sur les temps 1 et 3.' }),
@@ -575,7 +581,7 @@
   T.pick = id => PICK_BY[id] || null;
   T.pickCost = function (p) {
     if (p.d != null) return p.d;
-    const toks = p.toks;
+    const toks = p.toks.filter(t => t !== '.');
     const pinch = toks.filter(t => t.length > 1).length;
     const alt = toks.includes('P') ? 1 : 0;
     const travis = toks.filter((t, i) => i % 2 === 0 && (t[0] === 'p' || t[0] === 'P')).length === toks.length / 2 && alt ? 1 : 0;
