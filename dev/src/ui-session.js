@@ -14,6 +14,8 @@
   const vSym = id => C.vSym(id);
 
   /* ------------------------------------------------------------ cadre */
+  /** Temps de jeu actif (sans les moments où l'app était en arrière-plan). */
+  const activeMs = () => (RS ? Date.now() - RS.t0 - (RS.pausedMs || 0) - (RS.hiddenAt ? Date.now() - RS.hiddenAt : 0) : 0);
   function frame(body, foot, o) {
     o = o || {};
     if (!el) return;
@@ -35,7 +37,6 @@
     else { if (RS.hiddenAt) { RS.pausedMs += Date.now() - RS.hiddenAt; RS.hiddenAt = 0; } keepAwake(); }
   });
   document.addEventListener('click', () => { if (RS && !wake) keepAwake(); }, true);
-  const activeMs = () => (RS ? Date.now() - RS.t0 - (RS.pausedMs || 0) - (RS.hiddenAt ? Date.now() - RS.hiddenAt : 0) : 0);
   async function ensureSound(head) {
     await A.ensure();
     while (!A.running()) {
@@ -397,12 +398,16 @@
   async function playRhythm(ex, st, head) {
     const sc = st.score;
     A.startRec();
-    frame(stage(st.label, esc(st.voiceText || ''), guideHtml(sc)), btn('rec-stop', 'Arrêter', 'ghost block'), head);
+    const grid = st.showSong ? `<div id="gGrid" style="width:100%">${songGrid(st.showSong.song, st.showSong.sec)}</div>` : '';
+    frame(stage(st.label, esc(st.voiceText || ''), guideHtml(sc) + grid), btn('rec-stop', 'Arrêter', 'ghost block'), head);
     await U.sleep(350);
     const t0 = A.now() + 0.5;
     const ck = A.scheduleClicks(sc, t0, A.clickKind);
     const tEnd = ck.end + 0.6;
-    await guideLoop(sc, t0, tEnd);
+    // grille de la chanson : la mesure en cours est surlignée
+    let lastBar = -1;
+    const onTick = grid ? pos => { const bar = Math.floor(pos / sc.sig); if (bar !== lastBar) { lastBar = bar; const g = document.querySelector('#gGrid .grid'); if (g) [...g.children].forEach((c, j) => c.classList.toggle('now', j === bar)); } } : null;
+    await guideLoop(sc, t0, tEnd, onTick);
     while (A.now() < tEnd) await U.sleep(50);
     const r = A.stopRec();
     const recT0 = r.t0 != null ? r.t0 : t0 - 0.85;
@@ -745,6 +750,12 @@
       vis = U.diagram(params.v, { size: 'big', status });
       if (judged.y === 1) vis += '<p class="small muted center">Une corde frise (un « bzz ») ? Le micro ne l’entend pas toujours : avance le doigt juste derrière la frette.</p>';
     } else if (ex.id === 'minute' && res && res.strums) vis = `<div class="center"><div class="big-num">${Math.round(res.cpm || 0)}</div><div class="muted">changements/min · objectif ${params.target}${(() => { const p = St.pairStat(S(), params.a, params.b); return p ? ' · record ' + p.best : ''; })()}</div></div>`;
+    else if (ex.id === 'chanson' && res && res.chords && RS.lastScore) {
+      // chaque mesure de la section : juste si ses accords ont été reconnus au bon moment
+      const marks = [], sig = RS.lastScore.sig;
+      RS.lastScore.segments.forEach((g, i) => { const c = res.chords[i]; if (!c || c.ok == null) return; const bar = Math.floor(g.beat0 / sig); marks[bar] = marks[bar] === false ? false : !!c.ok; });
+      vis = songGrid(params.song, params.sec, null, marks) + U.rplot(res, 70, RS.lastScore);
+    }
     else if (res && res.events && RS.lastScore) vis = U.rplot(res, (RS.lastScore && params.tol) || 60, RS.lastScore);
     const draw = () => frame(`<div class="center"><div class="verdict ${vcls}">${vtxt}</div></div>${vis}<div class="card flat">${U.fbList(fb) || '<p class="muted small">—</p>'}</div>` +
       `<div class="row wrap">${rec && rec.pcm && rec.pcm.length ? btn('res-play', '▶ Ma prise', 'small') : ''}${btn('res-retry', '↺ Refaire', 'small')}${judged.y != null ? btn('res-dispute', 'Mesure fausse ?', 'small ghost') : ''}${btn('res-pain', RS.painMark ? '⚠︎ Noté' : 'Douleur', 'small ghost')}</div>`,

@@ -78,21 +78,19 @@ function report(name, problems) {
   snd.notes.forEach(n => { if (!(Math.abs(n.e) <= 1.5)) P1.push('note ' + n.m + ' : ' + n.e.toFixed(2) + ' c'); });
   report('notes de la guitare de l’app justes à ±1,5 cent dans le vrai moteur audio', P1);
   report('accords grattés par l’app reconnus par l’analyse de l’app (12 accords)', snd.chords.filter(c => c.best !== c.id).map(c => c.id + ' → ' + c.best));
-  // un coup est étalé sur ~20 ms (grave → aigu vers le bas, aigu → grave vers le haut) : on compare chaque coup aux
-  // autres coups de même sens (régularité de la programmation), et l'écart bas/haut à l'étalement d'un coup
-  const med = a => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
-  const byK = k => snd.rhythm.filter(r => r.k === k).map(r => r.e), P3 = [];
-  for (const k of ['D', 'U']) { const e = byK(k), m = med(e), dev = Math.max(...e.map(v => Math.abs(v - m))); if (dev > 6) P3.push('coups ' + k + ' : écart max ' + dev.toFixed(1) + ' ms'); }
-  const du = Math.abs(med(byK('D')) - med(byK('U'))); if (du > 25) P3.push('bas/haut décalés de ' + du.toFixed(1) + ' ms');
-  if (snd.extra) P3.push(snd.extra + ' attaque(s) en trop');
-  report('rythmique jouée par l’app : coups réguliers (±6 ms entre coups de même sens), aucun en trop', P3);
+  // la précision de la programmation est vérifiée par les clics (ci-dessous) ; ici, le contenu du motif : chaque coup
+  // présent, à sa place à l'étalement d'un coup gratté près (~20 ms de la 1re à la dernière corde), aucun en trop
+  const P3 = [], worst = Math.max(...snd.rhythm.map(r => Math.abs(r.e)));
+  if (worst > 25) P3.push('écart max ' + worst.toFixed(1) + ' ms');
+  if (snd.extra) P3.push((snd.extra > 0 ? snd.extra + ' attaque(s) en trop' : -snd.extra + ' coup(s) manquant(s)'));
+  report('rythmique jouée par l’app : tous les coups du motif, chacun à sa place (±25 ms), aucun en trop', P3);
   // la chaîne de sortie (limiteur suréchantillonné) retarde tout le son de quelques ms : sans effet sur les mesures,
   // puisque la latence est mesurée sur les clics passés par la même chaîne ; on vérifie un retard faible et constant
   report('clics du métronome retrouvés dans le son, retard constant (< 5 ms, dispersion ≤ 1 ms)', snd.lat && snd.lat.latency >= 0 && snd.lat.latency <= 0.005 && snd.lat.spread <= 1 && snd.lat.n >= 7 ? [] : ['mesure : ' + JSON.stringify(snd.lat)]);
   report('pas de saturation (crête < 1)', snd.peak < 1 ? [] : ['crête ' + snd.peak.toFixed(3)]);
 
   /* ------------------------------------------------------------ 2) interface */
-  const click = async (sel, wait) => { const el = await page.$(sel); if (!el) throw new Error('absent : ' + sel); await el.click(); await page.waitForTimeout(wait || 120); };
+  const click = async (sel, wait) => { if (!(await page.locator(sel).count())) throw new Error('absent : ' + sel); await page.locator(sel).first().click({ timeout: 5000 }); await page.waitForTimeout(wait || 120); };
   const text = async () => page.$eval('body', b => b.innerText);
   const U1 = [];
   try {
@@ -162,8 +160,10 @@ function report(name, problems) {
         seen.add(act); used[act] = (used[act] || 0) + 1;
         // les boutons d'un même écran se ressemblent : on varie l'argument (accords, critères)
         const sel = '.sess [data-act="' + act + '"]' + (act === 'self' ? '[data-arg="1"]' : '');
-        const all = await page.$$(sel); const el = all[(used[act] - 1) % Math.max(1, all.length)];
-        if (el) { await el.click(); await page.waitForTimeout(act === 'song-rec' ? 3600 : 150); }
+        const n = await page.locator(sel).count();
+        // localisateur relu au moment du clic : l'écran peut avoir été redessiné entre-temps
+        try { await page.locator(sel).nth((used[act] - 1) % Math.max(1, n)).click({ timeout: 4000 }); } catch (e) { used[act]--; }
+        await page.waitForTimeout(act === 'song-rec' ? 3600 : 150);
       } else await page.waitForTimeout(300);
     }
     return seen;

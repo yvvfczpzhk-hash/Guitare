@@ -596,14 +596,14 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
     if (!a || !b) return NaN;
     if (a.id === b.id) return 0;
     const ma = fingerMap(a), mb = fingerMap(b);
-    let moves = 0, anchors = 0, placed = 0;
+    let moves = 0, anchors = 0;
     for (const fg of [1, 2, 3, 4, 5]) {
       const pa = ma[fg], pb = mb[fg];
       if (pa && pb) {
         if (pa.s === pb.s && pa.f === pb.f && pa.lo === pb.lo && pa.hi === pb.hi) anchors++;
         else if (pa.s === pb.s && pa.lo === pb.lo && pa.hi === pb.hi) moves += 0.3 + 0.05 * Math.abs(pa.f - pb.f);        // glisse sur sa corde
         else moves += 0.6 + 0.12 * Math.abs(pa.s - pb.s) + 0.06 * Math.abs(pa.f - pb.f) + (pa.n !== pb.n ? 0.4 : 0);
-      } else if (pb && !pa) { placed++; moves += 0.55 + (fg === 4 ? 0.15 : 0) + (fg === 5 ? 0.6 : 0); }
+      } else if (pb && !pa) { moves += 0.55 + (fg === 4 ? 0.15 : 0) + (fg === 5 ? 0.6 : 0); }
       else if (pa && !pb) moves += 0.08;
     }
     const barreIn = T.isBarre(b) && !T.isBarre(a) ? 1.0 : T.isBarre(b) && T.isBarre(a) ? 0.25 : 0;
@@ -4921,6 +4921,8 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
   const vSym = id => C.vSym(id);
 
   /* ------------------------------------------------------------ cadre */
+  /** Temps de jeu actif (sans les moments où l'app était en arrière-plan). */
+  const activeMs = () => (RS ? Date.now() - RS.t0 - (RS.pausedMs || 0) - (RS.hiddenAt ? Date.now() - RS.hiddenAt : 0) : 0);
   function frame(body, foot, o) {
     o = o || {};
     if (!el) return;
@@ -4942,7 +4944,6 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
     else { if (RS.hiddenAt) { RS.pausedMs += Date.now() - RS.hiddenAt; RS.hiddenAt = 0; } keepAwake(); }
   });
   document.addEventListener('click', () => { if (RS && !wake) keepAwake(); }, true);
-  const activeMs = () => (RS ? Date.now() - RS.t0 - (RS.pausedMs || 0) - (RS.hiddenAt ? Date.now() - RS.hiddenAt : 0) : 0);
   async function ensureSound(head) {
     await A.ensure();
     while (!A.running()) {
@@ -5304,12 +5305,16 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
   async function playRhythm(ex, st, head) {
     const sc = st.score;
     A.startRec();
-    frame(stage(st.label, esc(st.voiceText || ''), guideHtml(sc)), btn('rec-stop', 'Arrêter', 'ghost block'), head);
+    const grid = st.showSong ? `<div id="gGrid" style="width:100%">${songGrid(st.showSong.song, st.showSong.sec)}</div>` : '';
+    frame(stage(st.label, esc(st.voiceText || ''), guideHtml(sc) + grid), btn('rec-stop', 'Arrêter', 'ghost block'), head);
     await U.sleep(350);
     const t0 = A.now() + 0.5;
     const ck = A.scheduleClicks(sc, t0, A.clickKind);
     const tEnd = ck.end + 0.6;
-    await guideLoop(sc, t0, tEnd);
+    // grille de la chanson : la mesure en cours est surlignée
+    let lastBar = -1;
+    const onTick = grid ? pos => { const bar = Math.floor(pos / sc.sig); if (bar !== lastBar) { lastBar = bar; const g = document.querySelector('#gGrid .grid'); if (g) [...g.children].forEach((c, j) => c.classList.toggle('now', j === bar)); } } : null;
+    await guideLoop(sc, t0, tEnd, onTick);
     while (A.now() < tEnd) await U.sleep(50);
     const r = A.stopRec();
     const recT0 = r.t0 != null ? r.t0 : t0 - 0.85;
@@ -5652,6 +5657,12 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
       vis = U.diagram(params.v, { size: 'big', status });
       if (judged.y === 1) vis += '<p class="small muted center">Une corde frise (un « bzz ») ? Le micro ne l’entend pas toujours : avance le doigt juste derrière la frette.</p>';
     } else if (ex.id === 'minute' && res && res.strums) vis = `<div class="center"><div class="big-num">${Math.round(res.cpm || 0)}</div><div class="muted">changements/min · objectif ${params.target}${(() => { const p = St.pairStat(S(), params.a, params.b); return p ? ' · record ' + p.best : ''; })()}</div></div>`;
+    else if (ex.id === 'chanson' && res && res.chords && RS.lastScore) {
+      // chaque mesure de la section : juste si ses accords ont été reconnus au bon moment
+      const marks = [], sig = RS.lastScore.sig;
+      RS.lastScore.segments.forEach((g, i) => { const c = res.chords[i]; if (!c || c.ok == null) return; const bar = Math.floor(g.beat0 / sig); marks[bar] = marks[bar] === false ? false : !!c.ok; });
+      vis = songGrid(params.song, params.sec, null, marks) + U.rplot(res, 70, RS.lastScore);
+    }
     else if (res && res.events && RS.lastScore) vis = U.rplot(res, (RS.lastScore && params.tol) || 60, RS.lastScore);
     const draw = () => frame(`<div class="center"><div class="verdict ${vcls}">${vtxt}</div></div>${vis}<div class="card flat">${U.fbList(fb) || '<p class="muted small">—</p>'}</div>` +
       `<div class="row wrap">${rec && rec.pcm && rec.pcm.length ? btn('res-play', '▶ Ma prise', 'small') : ''}${btn('res-retry', '↺ Refaire', 'small')}${judged.y != null ? btn('res-dispute', 'Mesure fausse ?', 'small ghost') : ''}${btn('res-pain', RS.painMark ? '⚠︎ Noté' : 'Douleur', 'small ghost')}</div>`,
@@ -5740,7 +5751,7 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
 (function (root) {
   'use strict';
   const AC = root.AC;
-  const U = AC.ui, T = AC.theory, D = AC.dsp, M = AC.model, C = AC.catalog, St = AC.state, P = AC.planner, A = AC.audio, Store = AC.store, R = AC.srs;
+  const U = AC.ui, T = AC.theory, D = AC.dsp, M = AC.model, C = AC.catalog, St = AC.state, P = AC.planner, A = AC.audio, Store = AC.store;
   const esc = U.esc, fr = U.fr, btn = U.btn;
   const S = () => U.state();
   const save = () => Store.save(S());
@@ -5859,7 +5870,7 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
   /** Séance d'un seul exercice (bibliothèque, raccourcis) : « exercice libre ». */
   function single(exId, extra) {
     const s = S(), ex = C.EX[exId];
-    const plan = { type: 'libre', title: ex.name, minutes: 5, block: P.block(St.programWeek(s)).n, items: [Object.assign({ ex: exId, takes: ex.kind === 'quiz' ? 1 : 3, comp: ex.comp }, extra || {})], targetP: M.TARGET_P, notes: [], reasons: [] };
+    const plan = { type: 'libre', title: ex.name, minutes: 5, block: P.block(St.programWeek(s)).n, items: [Object.assign({ ex: exId, takes: ['quiz', 'compose', 'song'].includes(ex.kind) ? 1 : 3, comp: ex.comp }, extra || {})], targetP: M.TARGET_P, notes: [], reasons: [] };
     U.startSession(plan);
   }
   U.on('quick', what => {
@@ -6074,7 +6085,7 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
   U.on('st-del-idea', async id => { const s = S(), idea = s.ideas.find(x => x.id === id); if (!idea) return; if (idea._armed) { s.ideas = s.ideas.filter(x => x.id !== id); if (idea.rec) await Store.deleteRec(idea.rec); save(); U.render(); } else { idea._armed = true; U.toast('Touche encore ✕ pour supprimer.'); } });
 
   /* ================================================================ OUTILS */
-  let tunerActive = false;
+  let tunerActive = false, toolTunerString = null;
   function stopTools() { A.metronome.stop(); clearTimeout(loopTimer); if (A.ctx()) A.stopAll(); }
   function tools() {
     if (toolOpen === 'tuner') return topbar('Accordeur', { act: 'tool-back' }) + `<section class="screen"><div class="card"><div class="tuner" id="toolTuner"><div class="note">♪</div><p class="muted">Joue une corde à vide et laisse-la sonner.</p></div></div>
@@ -6090,7 +6101,6 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
     return h;
   }
   U.on('tool-back', () => { stopTools(); toolOpen = null; U.render(); });
-  let toolTunerString = null;
   U.on('tt-string', s => { toolTunerString = toolTunerString === +s ? null : +s; U.render(); });
   const tunerOpen = () => screen === 'tools' && toolOpen === 'tuner' && !U.inSession();
   async function startToolTuner() {

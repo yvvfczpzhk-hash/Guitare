@@ -377,14 +377,14 @@
     if (!a || !b) return NaN;
     if (a.id === b.id) return 0;
     const ma = fingerMap(a), mb = fingerMap(b);
-    let moves = 0, anchors = 0, placed = 0;
+    let moves = 0, anchors = 0;
     for (const fg of [1, 2, 3, 4, 5]) {
       const pa = ma[fg], pb = mb[fg];
       if (pa && pb) {
         if (pa.s === pb.s && pa.f === pb.f && pa.lo === pb.lo && pa.hi === pb.hi) anchors++;
         else if (pa.s === pb.s && pa.lo === pb.lo && pa.hi === pb.hi) moves += 0.3 + 0.05 * Math.abs(pa.f - pb.f);        // glisse sur sa corde
         else moves += 0.6 + 0.12 * Math.abs(pa.s - pb.s) + 0.06 * Math.abs(pa.f - pb.f) + (pa.n !== pb.n ? 0.4 : 0);
-      } else if (pb && !pa) { placed++; moves += 0.55 + (fg === 4 ? 0.15 : 0) + (fg === 5 ? 0.6 : 0); }
+      } else if (pb && !pa) { moves += 0.55 + (fg === 4 ? 0.15 : 0) + (fg === 5 ? 0.6 : 0); }
       else if (pa && !pb) moves += 0.08;
     }
     const barreIn = T.isBarre(b) && !T.isBarre(a) ? 1.0 : T.isBarre(b) && T.isBarre(a) ? 0.25 : 0;

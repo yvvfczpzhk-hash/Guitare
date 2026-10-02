@@ -23,7 +23,7 @@ L'ancienne app d'exercices quotidiens reste disponible dans `corde.html` ; au pr
   - Écoute du modèle avant de jouer (Cash et al. 2014) ; retour bref après la prise ; parfois tu devines d'abord (« c'était propre ? »).
   - Pauses sans geste (Simmons et al. 2019) ; cartes de théorie en répétition espacée (FSRS).
   - Voix ajoutée par paliers : compter, parler, fredonner, chanter (Beilock et al. 2002). Filages enregistrés sous légère pression (Oudejans & Pijpers 2009).
-  - Bilans au micro toutes les 4 semaines. Forme du jour, doigts, douleur, charge de la semaine et échéance (anniversaire, scène ouverte) ajustent la séance.
+  - Bilan d'entrée si tu joues déjà, puis bilans au micro toutes les 4 semaines. Forme du jour, doigts, douleur, charge de la semaine et échéance (anniversaire, scène ouverte) ajustent la séance.
 - **Composer.** Studio : grilles dans une tonalité, accords empruntés, « et après ? » (enchaînements fréquents en pop), écoute en boucle avec la rythmique choisie, idées gardées. Ateliers guidés dans le programme : contraintes de grille, rythmique, mélodie fredonnée analysée (notes de l'accord sur les temps forts, petits pas), structure, texte.
 - **Outils.** Accordeur, métronome (le clic peut se taire, tempo tapé), dictionnaire d'accords avec son, exercices au choix, mesure de la latence.
 
@@ -42,7 +42,7 @@ Sauvegarde : Réglages → Exporter (un fichier JSON à garder dans tes fichiers
 
 ## Tests
 
-- `node tests/run.js` : théorie (accords en français et en anglais, grilles collées, tonalité, capo, degrés), moteur d'analyse sur des guitares de synthèse (attaques, latence, rythmiques, frappes, pulsation, accords, diagnostic, changements par minute, corde par corde, accordeurs, temps de réaction, voix), guitare de synthèse de l'app, exercices, cartes, état et programme de 16 semaines sur un élève simulé. Aucune dépendance.
-- `node tests/browser.js` : sons de l'app dans un vrai moteur Web Audio (justesse, accords reconnus, rythme, clics, saturation) et parcours de l'interface avec un micro factice (premier lancement, chanson collée, studio, outils, séances, reprise, sauvegarde). Nécessite Playwright (`npm i -D playwright && npx playwright install chromium`).
+- `node tests/run.js` : théorie (accords en français et en anglais, grilles collées, tonalité, capo, degrés), moteur d'analyse sur des guitares de synthèse (attaques, latence, rythmiques, frappes, pulsation, accords, diagnostic, changements par minute, corde par corde, accordeurs, temps de réaction, voix), capo attendu et capo oublié, guitare de synthèse de l'app, exercices, cartes, état et programme de 16 semaines sur un élève simulé. Aucune dépendance, environ 10 minutes (`node tests/run.js capo` : seulement les tests dont le nom contient « capo »).
+- `node tests/browser.js` : sons de l'app dans un vrai moteur Web Audio (justesse, accords reconnus, rythme, clics, saturation) et parcours de l'interface avec un micro factice (premier lancement, chanson collée, studio, outils, quiz d'oreille, cartes, atelier de composition, filage, prises au micro, séance interrompue puis reprise, sauvegarde). Nécessite Playwright (`npm i -D playwright && npx playwright install chromium`).
 
 Le code est dans `index.html`, découpé en modules (`/* ==== theory.js ==== */`, `dsp.js`, `gsynth.js`, `model.js`, `srs.js`, `catalog.js`, `state.js`, `planner.js`, puis `audio.js`, `ui-*.js`). Les modules avant `audio.js` sont purs (sans navigateur) : `tests/load.js` les charge tels quels.

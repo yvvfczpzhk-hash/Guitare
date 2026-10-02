@@ -3,7 +3,7 @@
 (function (root) {
   'use strict';
   const AC = root.AC;
-  const U = AC.ui, T = AC.theory, D = AC.dsp, M = AC.model, C = AC.catalog, St = AC.state, P = AC.planner, A = AC.audio, Store = AC.store, R = AC.srs;
+  const U = AC.ui, T = AC.theory, D = AC.dsp, M = AC.model, C = AC.catalog, St = AC.state, P = AC.planner, A = AC.audio, Store = AC.store;
   const esc = U.esc, fr = U.fr, btn = U.btn;
   const S = () => U.state();
   const save = () => Store.save(S());
@@ -122,7 +122,7 @@
   /** Séance d'un seul exercice (bibliothèque, raccourcis) : « exercice libre ». */
   function single(exId, extra) {
     const s = S(), ex = C.EX[exId];
-    const plan = { type: 'libre', title: ex.name, minutes: 5, block: P.block(St.programWeek(s)).n, items: [Object.assign({ ex: exId, takes: ex.kind === 'quiz' ? 1 : 3, comp: ex.comp }, extra || {})], targetP: M.TARGET_P, notes: [], reasons: [] };
+    const plan = { type: 'libre', title: ex.name, minutes: 5, block: P.block(St.programWeek(s)).n, items: [Object.assign({ ex: exId, takes: ['quiz', 'compose', 'song'].includes(ex.kind) ? 1 : 3, comp: ex.comp }, extra || {})], targetP: M.TARGET_P, notes: [], reasons: [] };
     U.startSession(plan);
   }
   U.on('quick', what => {
@@ -337,7 +337,7 @@
   U.on('st-del-idea', async id => { const s = S(), idea = s.ideas.find(x => x.id === id); if (!idea) return; if (idea._armed) { s.ideas = s.ideas.filter(x => x.id !== id); if (idea.rec) await Store.deleteRec(idea.rec); save(); U.render(); } else { idea._armed = true; U.toast('Touche encore ✕ pour supprimer.'); } });
 
   /* ================================================================ OUTILS */
-  let tunerActive = false;
+  let tunerActive = false, toolTunerString = null;
   function stopTools() { A.metronome.stop(); clearTimeout(loopTimer); if (A.ctx()) A.stopAll(); }
   function tools() {
     if (toolOpen === 'tuner') return topbar('Accordeur', { act: 'tool-back' }) + `<section class="screen"><div class="card"><div class="tuner" id="toolTuner"><div class="note">♪</div><p class="muted">Joue une corde à vide et laisse-la sonner.</p></div></div>
@@ -353,7 +353,6 @@
     return h;
   }
   U.on('tool-back', () => { stopTools(); toolOpen = null; U.render(); });
-  let toolTunerString = null;
   U.on('tt-string', s => { toolTunerString = toolTunerString === +s ? null : +s; U.render(); });
   const tunerOpen = () => screen === 'tools' && toolOpen === 'tuner' && !U.inSession();
   async function startToolTuner() {
