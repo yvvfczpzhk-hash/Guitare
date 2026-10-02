@@ -184,10 +184,11 @@
       if (r && isFinite(r.f0)) {
         const target = s != null ? T.OPEN[s] : r.target, cents = 100 * (r.midi - target);
         if (Math.abs(cents) < 300) hist.push(cents); if (hist.length > 5) hist.shift();
+        if (!hist.length) { await U.sleep(90); continue; }
         const c = D.median(hist), ok = Math.abs(c) <= 4;
         okSince = ok ? okSince || Date.now() : 0;
         const pos = 50 + Math.max(-50, Math.min(50, c));
-        if (box) box.innerHTML = `<div class="small muted">${esc(s != null ? 'Corde ' + T.STRING_NUM[s] + ' · ' + T.STRING_FR[s] : 'Corde ' + T.STRING_NUM[r.string] + ' · ' + T.STRING_FR[r.string])}</div><div class="note">${esc(T.noteName(target))}</div><div class="gauge"><div class="scale"></div><div class="needle ${ok ? 'ok' : ''}" style="left:${pos}%"></div></div><div class="cents">${c > 0 ? '+' : ''}${Math.round(c)} cents · ${ok ? (Date.now() - okSince > 600 ? 'juste ✓' : 'presque…') : c < 0 ? 'trop bas : tends la corde' : 'trop haut : détends un peu, puis remonte'}</div>`;
+        if (box) box.innerHTML = `<div class="small muted">${esc(s != null ? 'Corde ' + T.STRING_NUM[s] + ' · ' + T.STRING_FR[s] : 'Corde ' + T.STRING_NUM[r.string] + ' · ' + T.STRING_FR[r.string])}</div><div class="note">${esc(T.noteName(target).replace(/-?\d+$/, ''))}</div><div class="gauge"><div class="scale"></div><div class="needle ${ok ? 'ok' : ''}" style="left:${pos}%"></div></div><div class="cents">${c > 0 ? '+' : ''}${Math.round(c)} cents · ${ok ? (Date.now() - okSince > 600 ? 'juste ✓' : 'presque…') : c < 0 ? 'trop bas : tends la corde' : 'trop haut : détends un peu, puis remonte'}</div>`;
       } else if (box && !hist.length) box.innerHTML = `<div class="note">♪</div><p class="muted">Joue la corde ${s != null ? T.STRING_NUM[s] + ' (' + esc(T.STRING_FR[s]) + ')' : ''} à vide, et laisse sonner.</p>`;
       await U.sleep(90);
     }
@@ -198,7 +199,7 @@
   /* ------------------------------------------------------------ une prise */
   async function runTake(ex, item, k) {
     const s = S(), comp = ex.comp;
-    const ctx = St.ctx(s, RS.plan, { takeIndex: k, block: RS.plan.block });
+    const ctx = St.ctx(s, RS.plan, { takeIndex: k, block: RS.plan.block, focusPair: item.focusPair || null });
     let params, d;
     if (item.fixed) { params = item.fixed[Math.min(k, item.fixed.length - 1)]; d = ex.difficulty(params, ctx); }
     else if (item.ladder) { params = item.ladder[k]; d = ex.difficulty(params, ctx); }
@@ -394,7 +395,7 @@
     return stop;
   }
   async function playRhythm(ex, st, head) {
-    const sc = st.score, beat = 60 / sc.tempo;
+    const sc = st.score;
     A.startRec();
     frame(stage(st.label, esc(st.voiceText || ''), guideHtml(sc)), btn('rec-stop', 'Arrêter', 'ghost block'), head);
     await U.sleep(350);
@@ -407,14 +408,7 @@
     const recT0 = r.t0 != null ? r.t0 : t0 - 0.85;
     const rel = t => t - recT0;
     const start = ck.start;
-    const spec = {
-      clicks: ck.times.map(c => rel(c.t)), cleanClicks: sc.countIn,
-      latency: isFinite(S().profile.latency) ? S().profile.latency : A.outputLatency() + 0.03,
-      events: sc.events.map(e => ({ t: rel(start + e.beat * beat), k: e.k, chord: e.v, free: !sc.clickBars[Math.floor(e.beat / sc.sig)] })),
-      slot: beat / sc.sub,
-      segments: sc.segments.map(g => ({ t0: rel(start + g.beat0 * beat), t1: rel(start + g.beat1 * beat), v: g.v })),
-      vocab: Array.from(new Set(sc.seq)).map(id => T.voicing(id)),
-    };
+    const spec = C.rhythmSpec(sc, rel(start), ck.times.map(c => rel(c.t)), isFinite(S().profile.latency) ? S().profile.latency : A.outputLatency() + 0.03);
     return { pcm: r.pcm, sr: r.sr, spec, score: sc, t0rel: rel(start) };
   }
   async function playChanges(st, head) {
@@ -596,7 +590,7 @@
     const s = S(), song = St.workSong(s);
     const info = song ? St.songInfo(song) : null;
     const grid = info && info.ok ? info.sections.map((sec, i) => `<h3 style="margin-top:8px">${esc(sec.name)}</h3>` + songGrid(song.id, i)).join('') : '';
-    frame(`<div class="notice">Une seule prise, du début à la fin. Si tu te trompes, continue comme sur scène.</div>${grid}`, btn('song-rec', '● Enregistrer', 'primary big block'), head);
+    frame(`<div class="notice">Une seule prise, du début à la fin. Si tu te trompes, continue comme sur scène.${info && info.ok && info.capo ? ' Capo en case ' + info.capo + '.' : ''}</div>${grid}`, btn('song-rec', '● Enregistrer', 'primary big block'), head);
     await U.wait(['song-rec']);
     let pcm = null, sr = 48000;
     if (RS.mic) {
@@ -673,7 +667,7 @@
       else if (a.act === 'cp-play') { if (prog.length) { await ensureSound(head); A.stopAll(); A.play({ kind: 'pattern', strum, seq: vids(), bpc: 4, tempo, bars: prog.length, withClicks: false }); } }
       else if (a.act === 'cp-rec') { if (!prog.length) { U.toast('Construis d’abord une grille.'); continue; } const r = await recordMelody(vids(), syms(), tempo, strum, head); if (r) { melody = r; pcm = r.pcm; sr = r.sr; } draw(); }
       else if (a.act === 'cp-skip') { A.stopAll(); return { self: null }; }
-      else if (a.act === 'cp-save') { A.stopAll(); break; }
+      else if (a.act === 'cp-save') { if (prog.length < 2 && !text.trim() && !melody) { U.toast('Ajoute au moins deux accords.'); continue; } A.stopAll(); break; }
     }
     const idea = { id: 'i' + Date.now().toString(36), date: St.today(), task, key, prog: prog.slice(), syms: syms(), tempo, strum, text, title: 'Idée du ' + U.dateFr(St.today()) };
     if (pcm && pcm.length) { try { idea.rec = await Store.saveRec(D.resample(pcm, sr, 22050), 22050, { kind: 'idea', idea: idea.id, label: idea.title }); } catch (e) { /* rien */ } }

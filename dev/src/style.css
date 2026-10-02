@@ -39,7 +39,7 @@ p { margin: 0; }
 .col { display: flex; flex-direction: column; gap: 10px; } .grow { flex: 1; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 #app { max-width: 560px; margin: 0 auto; padding: 0 16px calc(96px + env(safe-area-inset-bottom)); }
-.topbar { position: sticky; top: 0; z-index: 5; background: linear-gradient(var(--bg) 70%, transparent); padding: calc(12px + env(safe-area-inset-top)) 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.topbar { position: sticky; top: 0; z-index: 5; background: var(--bg); box-shadow: 0 10px 12px -14px rgba(0,0,0,.35); padding: calc(12px + env(safe-area-inset-top)) 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .brand { font-weight: 800; letter-spacing: .16em; font-size: 15px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
 .brand i { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 .screen { display: flex; flex-direction: column; gap: var(--gap); padding-top: 4px; }
@@ -141,6 +141,8 @@ table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .spark { width: 100%; height: 70px; display: block; }
 /* ---------- guitare : diagrammes, motifs, grilles */
 .diagrams { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.dict { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+.dict > button { padding: 8px 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
 .diag { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .diag svg { display: block; }
 .diag .nm { font-weight: 750; font-size: 17px; }

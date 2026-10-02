@@ -98,7 +98,7 @@
   /** Coup sur un accord : D vers le bas (grave → aigu), U vers le haut (aigu → grave, sans les basses). */
   A.strumAt = function (vid, t, dir, vel, o) {
     o = o || {};
-    const v = typeof vid === 'string' ? T.voicing(vid) : vid;
+    const v = T.withCapo(typeof vid === 'string' ? T.voicing(vid) : vid, o.capo || 0);
     if (!v) return;
     let ss = T.sounding(v);
     if (dir === 'U') ss = ss.filter(s => s >= 2).reverse();
@@ -131,11 +131,11 @@
     for (const e of score.events) {
       const t = t0 + e.beat * beat;
       if (e.tok) {
-        const v = T.voicing(e.v); if (!v) continue;
+        const v = T.withCapo(T.voicing(e.v), score.capo || 0); if (!v) continue;
         const ss = e.tok.length > 1 ? [T.pickString(e.tok[0], v), T.pickString(e.tok[1], v)] : [T.pickString(e.tok, v)];
         ss.forEach(s => { if (s != null && v.frets[s] >= 0) pluckString(s, T.OPEN[s] + v.frets[s], t, 0.75); else if (s != null) pluckString(s, T.OPEN[s], t, 0.75); });
       } else if (e.k === 'X') A.chuckAt(t, 0.8);
-      else A.strumAt(e.v, t, e.k, e.acc ? 0.95 : e.k === 'U' ? 0.7 : 0.85);
+      else A.strumAt(e.v, t, e.k, e.acc ? 0.95 : e.k === 'U' ? 0.7 : 0.85, { capo: score.capo || 0 });
       end = Math.max(end, t);
     }
     return end + 1.2;
@@ -168,18 +168,19 @@
     const t0 = ctx.currentTime + 0.08 + (p.pre || 0);
     const C = AC.catalog;
     let end = t0;
-    if (p.kind === 'strum') { A.strumAt(p.v, t0, p.dir || 'D', p.vel || 0.85); end = t0 + 2; }
+    const cp = { capo: p.capo || 0 };
+    if (p.kind === 'strum') { A.strumAt(p.v, t0, p.dir || 'D', p.vel || 0.85, cp); end = t0 + 2; }
     else if (p.kind === 'arp') {
-      const v = T.voicing(p.v), ss = T.sounding(v), gap = p.gap || 0.5;
+      const v = T.withCapo(T.voicing(p.v), cp.capo), ss = T.sounding(v), gap = p.gap || 0.5;
       ss.forEach((s, k) => pluckString(s, T.OPEN[s] + v.frets[s], t0 + k * gap, 0.8));
-      A.strumAt(p.v, t0 + ss.length * gap + 0.4, 'D', 0.85);
+      A.strumAt(p.v, t0 + ss.length * gap + 0.4, 'D', 0.85, cp);
       end = t0 + ss.length * gap + 2.2;
     } else if (p.kind === 'pattern' || p.kind === 'pick') {
-      const score = C.rhythmScore({ strum: p.kind === 'pattern' ? p.strum : null, pick: p.kind === 'pick' ? p.pick : null, seq: p.seq, bpc: p.bpc, tempo: p.tempo, bars: p.bars || 2 });
+      const score = C.rhythmScore({ strum: p.kind === 'pattern' ? p.strum : null, pick: p.kind === 'pick' ? p.pick : null, seq: p.seq, bpc: p.bpc, tempo: p.tempo, bars: p.bars || 2, capo: cp.capo });
       if (p.withClicks !== false) { const beat = 60 / p.tempo; for (let i = 0; i < score.bars * score.sig; i++) A.clickAt(t0 + i * beat, i % score.sig === 0, 'bois'); }
       end = scheduleScore(score, t0);
     } else if (p.kind === 'changes') {
-      for (let i = 0; i < (p.n || 6); i++) A.strumAt(i % 2 ? p.b : p.a, t0 + i * p.gap, 'D', 0.85);
+      for (let i = 0; i < (p.n || 6); i++) A.strumAt(i % 2 ? p.b : p.a, t0 + i * p.gap, 'D', 0.85, cp);
       end = t0 + (p.n || 6) * p.gap + 1.2;
     } else if (p.kind === 'cadence') {
       // I–IV–V–I dans la tonalité, puis (après un silence) l'accord à reconnaître
@@ -191,7 +192,7 @@
       end = t + then.length * 1.1 + 1.6;
     } else if (p.kind === 'progression') {
       const beat = 60 / (p.tempo || 90);
-      p.seq.forEach((id, i) => { for (let b = 0; b < (p.bpc || 4); b++) A.strumAt(id, t0 + (i * (p.bpc || 4) + b) * beat, b % 2 ? 'U' : 'D', b ? 0.65 : 0.9); });
+      p.seq.forEach((id, i) => { for (let b = 0; b < (p.bpc || 4); b++) A.strumAt(id, t0 + (i * (p.bpc || 4) + b) * beat, b % 2 ? 'U' : 'D', b ? 0.65 : 0.9, cp); });
       end = t0 + p.seq.length * (p.bpc || 4) * beat + 1.5;
     } else if (p.kind === 'note') { A.noteAt(p.midi, t0, 0.85); end = t0 + (p.dur || 1.6); }
     else if (p.kind === 'pair') { A.noteAt(p.a, t0, 0.85, 3); A.noteAt(p.b, t0 + (p.gap || 1.1), 0.85, 3); end = t0 + (p.gap || 1.1) + 1.4; }
@@ -393,6 +394,7 @@
   S.listRecs = async function (filter) { try { const all = await tx(['meta'], 'readonly', m => m.getAll()); return (all || []).filter(r => !filter || filter(r)).sort((a, b) => b.ts - a.ts); } catch (e) { return []; } };
   S.getRec = async function (id) { try { const r = await tx(['rec'], 'readonly', st => st.get(id)); return r ? { pcm: new Int16Array(r.data), sr: r.sr, meta: metaOf(r) } : null; } catch (e) { return null; } };
   S.deleteRec = async function (id) { try { await tx(['rec', 'meta'], 'readwrite', (r, m) => { r.delete(id); m.delete(id); }); } catch (e) { /* rien */ } };
+  S.clearRecs = async function () { try { await tx(['rec', 'meta'], 'readwrite', (r, m) => { r.clear(); m.clear(); }); } catch (e) { /* rien */ } };
   S.keepRec = async function (id, keep) { try { const m = await tx(['meta'], 'readonly', st => st.get(id)); if (m) { m.keep = !!keep; await tx(['meta'], 'readwrite', st => st.put(m)); } } catch (e) { /* rien */ } };
   /** Garde au plus 60 prises non marquées (les idées de composition sont toujours gardées). */
   S.prune = async function () { const list = await S.listRecs(); const free = list.filter(r => !r.keep && r.kind !== 'idea'); for (const r of free.slice(60)) await S.deleteRec(r.id); };

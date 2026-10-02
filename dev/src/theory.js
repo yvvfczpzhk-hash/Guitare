@@ -338,6 +338,23 @@
     return { root: rootS, alt };
   };
   T.isBarre = v => !!(v && v.barre && v.barre.to - v.barre.from >= 3);
+  /**
+   * Forme jouée avec un capodastre en case `capo` : mêmes doigts, mais les cordes à vide et les cases sonnent
+   * `capo` demi-tons plus haut. Sert au son des modèles et à l'analyse ; l'affichage garde la forme (`shape`).
+   */
+  const CAPO_CACHE = new Map();
+  T.withCapo = function (v, capo) {
+    if (typeof v === 'string') v = T.voicing(v);
+    if (!v || !capo) return v;
+    if (v.shape) v = v.shape;
+    const k = v.id + '@' + capo;
+    let c = CAPO_CACHE.get(k);
+    if (!c) {
+      c = Object.assign({}, v, { capo, shape: v, frets: v.frets.map(f => (f >= 0 ? f + capo : f)), barre: v.barre ? Object.assign({}, v.barre, { fret: v.barre.fret + capo }) : v.barre });
+      CAPO_CACHE.set(k, c);
+    }
+    return c;
+  };
 
   /* ---------------------------------------------------------------- changements d'accords */
   /** Positions des doigts : {doigt: {s, f}} ; barré = index sur plusieurs cordes. */
@@ -623,7 +640,7 @@
     let bass = null;
     if (m[5] === '/3') bass = mod12(pc + (minor ? 3 : 4));
     if (m[5] === '/5') bass = mod12(pc + 7);
-    const fl = flats != null ? flats : T.keyFlats(tonic, false);
+    const fl = flats != null ? flats : m[1] ? true : T.keyFlats(tonic, false);   // ♭VI, ♭VII : bémols (Mi♭, pas Ré♯)
     return T.chordSym({ root: pc, q, bass }, fl);
   };
   // Tendances des enchaînements en pop/rock (heuristique inspirée des corpus : I et IV dominent,

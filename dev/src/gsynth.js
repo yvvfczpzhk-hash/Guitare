@@ -47,14 +47,23 @@
     const w = 2 * Math.PI * f0 / sr;
     const hmag = Math.sqrt((1 - S) * (1 - S) + S * S + 2 * S * (1 - S) * Math.cos(w));
     const g = Math.min(0.99995, Math.pow(10, -3 / (t60 * f0)) / hmag);
-    // excitation : bruit filtré (force) et peigne de position d'attaque
+    // excitation : forme triangulaire du pincement (harmoniques en sin(nπβ)/n², comme une vraie corde : fondamental
+    // fort, aigus qui décroissent) + un peu de bruit filtré pour l'attaque du médiator (plus vif si on joue fort)
     const buf = new Float32Array(L + 2);
-    const beta = o.pick || 0.13, P = Math.max(1, Math.round(beta * L));
+    const beta = o.pick || 0.13;
     const ex = new Float32Array(L + 2);
-    let lp = 0; const k = 0.25 + 0.6 * vel;
+    let lp = 0; const k = 0.2 + 0.5 * vel;
     for (let i = 0; i < L + 2; i++) { lp += k * ((r() * 2 - 1) - lp); ex[i] = lp; }
-    for (let i = 0; i < L + 2; i++) buf[i] = ex[i] - (i >= P ? ex[i - P] : 0);
-    let mx = 0; for (let i = 0; i < L + 2; i++) mx = Math.max(mx, Math.abs(buf[i]));
+    let mxn = 0; for (let i = 0; i < L + 2; i++) mxn = Math.max(mxn, Math.abs(ex[i]));
+    const noiseMix = 0.12 + 0.18 * vel;
+    let mean = 0;
+    for (let i = 0; i < L + 2; i++) {
+      const x = (i % L) / L, tri = x < beta ? x / beta : (1 - x) / (1 - beta);
+      buf[i] = tri + noiseMix * ex[i] / (mxn || 1);
+      mean += buf[i];
+    }
+    mean /= L + 2;
+    let mx = 0; for (let i = 0; i < L + 2; i++) { buf[i] -= mean; mx = Math.max(mx, Math.abs(buf[i])); }
     for (let i = 0; i < L + 2; i++) buf[i] /= mx || 1;
     // boucle de Karplus-Strong
     let idx = 0, prev = 0, apX1 = 0, apY1 = 0;
@@ -78,7 +87,9 @@
     const fade = Math.min(n, Math.floor(0.05 * sr));
     for (let i = 0; i < fade; i++) y[n - 1 - i] *= i / fade;
     let pk = 0; for (let i = 0; i < Math.min(n, sr * 0.2); i++) pk = Math.max(pk, Math.abs(y[i]));
-    const gain = 0.9 * (0.35 + 0.65 * vel) / (pk || 1);
+    // équilibre grave/aigu d'une vraie guitare : les cordes aiguës ressortent dans un accord (sinon un Do add9
+    // sonnerait comme un Do, et les résonances de caisse ci-dessus favorisent déjà les basses)
+    const gain = 0.9 * (0.35 + 0.65 * vel) * (0.85 + 0.3 * Math.max(0, Math.min(1, (midi - 40) / 36))) / (pk || 1);
     for (let i = 0; i < n; i++) y[i] *= gain;
     return y;
   };

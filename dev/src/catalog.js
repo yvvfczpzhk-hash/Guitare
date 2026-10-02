@@ -70,7 +70,7 @@
       else for (let i = 0; i < sig * (o.sub || 1); i++) { const beat = b * sig + i / (o.sub || 1); events.push({ beat, k: 'D', v: chordAt(beat) }); }
     }
     for (let beat = 0; beat < bars * sig; beat += bpc) segments.push({ beat0: beat, beat1: Math.min(bars * sig, beat + bpc), v: chordAt(beat) });
-    return { tempo: o.tempo, sig, sub, countIn: o.countIn != null ? o.countIn : sig, bars, clickBars: o.clickBars || new Array(bars).fill(true), events, segments, strum: o.strum || null, pick: o.pick || null, seq, bpc };
+    return { tempo: o.tempo, sig, sub, countIn: o.countIn != null ? o.countIn : sig, bars, clickBars: o.clickBars || new Array(bars).fill(true), events, segments, strum: o.strum || null, pick: o.pick || null, seq, bpc, capo: o.capo || 0 };
   }
   C.rhythmScore = rhythmScore;
 
@@ -82,6 +82,7 @@
     if (res.issues.includes('silence')) fb.push({ kind: 'warn', text: 'Je ne t’ai pas entendu — pose le téléphone à 30–60 cm de la rosace et joue après le décompte.' });
     if (res.issues.includes('clip')) fb.push({ kind: 'warn', text: 'Son saturé : éloigne un peu le téléphone.' });
     if (res.issues.includes('noise')) fb.push({ kind: 'warn', text: 'Pièce bruyante : la mesure est moins sûre.' });
+    if (res.capoHeard != null) fb.push({ kind: 'info', text: res.capoHeard ? 'J’entends un capo en case ' + res.capoHeard + ' : j’en ai tenu compte.' : 'J’entends que tu joues sans capo : j’en ai tenu compte.' });
     return fb;
   }
   C.recordingIssues = recordingIssues;
@@ -163,6 +164,22 @@
     return out;
   }
   C.pairs = pairs;
+
+  /**
+   * Spécification d'analyse d'une prise rythmée, partagée par l'app et les tests.
+   * sc : partition (rhythmScore) ; start : instant (s, depuis le 1er échantillon enregistré) du 1er temps après le
+   * décompte ; clicks : instants des clics programmés (même origine) ; latency : latence a priori (s).
+   */
+  C.rhythmSpec = function (sc, start, clicks, latency) {
+    const beat = 60 / sc.tempo;
+    return {
+      clicks, cleanClicks: sc.countIn, latency, capo: sc.capo || 0,
+      events: sc.events.map(e => ({ t: start + e.beat * beat, k: e.k, chord: e.v, free: !sc.clickBars[Math.floor(e.beat / sc.sig)] })),
+      slot: beat / sc.sub,
+      segments: sc.segments.map(g => ({ t0: start + g.beat0 * beat, t1: start + g.beat1 * beat, v: g.v })),
+      vocab: Array.from(new Set(sc.seq)).map(id => T.voicing(id)),
+    };
+  };
 
   /* ================================================================ EXERCICES */
   const EX = [];
@@ -395,7 +412,7 @@
         if (!ok) fb.push({ kind: 'tip', text: pct > 0 ? 'On accélère presque toujours dans le silence : pense « posé », compte les temps à voix basse.' : 'Garde le mouvement du bras régulier, même entre les coups.' });
       } else if (p.silent) fb.push({ kind: 'warn', text: 'Pas assez de coups mesurés pendant le silence.' });
       const sd = res.sd;
-      return { y, success: y === 1, fb, metrics: { mae: +(res.mae || 0).toFixed(1), sd: isFinite(sd) ? +sd.toFixed(1) : null, drift: res.drift ? +((res.drift.tempoRatio - 1) * 100).toFixed(1) : null }, observe: isFinite(sd) && clicked.length >= 6 ? { comp: 'pulsation', level: M.scale(sd, M.SCALES.timingSd), noise: 1.5 } : null };
+      return { y, success: y === 1, fb, metrics: { mae: +(res.mae || 0).toFixed(1), sd: isFinite(sd) ? +sd.toFixed(1) : null, drift: res.drift ? +((res.drift.tempoRatio - 1) * 100).toFixed(1) : null }, observe: isFinite(sd) && hitC >= 0.8 && clicked.filter(e => e.hit).length >= 6 && (res.extras || []).length <= 0.25 * clicked.length ? { comp: 'pulsation', level: M.scale(sd, M.SCALES.timingSd), noise: 1.5 } : null };
     },
   });
 
@@ -577,6 +594,7 @@
     multi: true,
     judge(res, p, ctx, extra) {
       const all = (extra && extra.multi) || [res];
+      if (!all.some(r => r && r.ok && r.cues)) return { y: null, success: null, fb: recordingIssues(res) };
       const fb = [];
       let good = 0;
       all.forEach((r, i) => {
@@ -636,17 +654,18 @@
       return [
         { t: 'show', pattern: p.p, v: p.seq, label: 'Rythmique + voix (' + lv.name + ')', sub: lv.text + (lyr ? '. ' + lyr : '') },
         { t: 'listen', play: { kind: 'pattern', strum: p.p, seq: p.seq, bpc: pat.sig, tempo: p.tempo, bars: 1 }, label: 'Le motif' },
-        { t: 'play', label: 'Joue, et ' + lv.name.replace('en ', '') + ' dès la 2ᵉ mesure', rec: { kind: 'rhythm', tol: 55, voice: p.voice !== 'compter' || true }, score, voiceText: lv.text },
+        { t: 'play', label: 'Joue, et ' + lv.name.replace('en ', '') + ' dès la 2ᵉ mesure', rec: { kind: 'rhythm', tol: 55, voice: true }, score, voiceText: lv.text },
       ];
     },
     judge(res, p, ctx, extra) {
       const fb = recordingIssues(res);
       if (!res || !res.ok || !res.events) return { y: null, success: null, fb };
       const n = res.events.length, ex = (res.extras || []).length;
-      const voiceOk = res.voiceShare == null || res.voiceShare >= 0.15;
-      let y = res.hitRate >= 0.88 && ex <= Math.max(1, Math.round(n * 0.08)) && res.mae <= 55 ? 1 : res.hitRate >= 0.7 && res.mae <= 90 ? 0.5 : 0;
-      if (!voiceOk) { y = Math.min(y, 0.5); fb.push({ kind: 'warn', text: 'Je n’ai presque pas entendu ta voix : le but est de la garder du début à la fin.' }); }
-      else if (res.voiceShare != null) fb.push({ kind: 'good', text: 'Voix présente ✓' });
+      // la mesure de cet exercice, c'est la main droite pendant que tu chantes (double tâche) ; la voix, mêlée à la
+      // guitare, n'est pas toujours séparable : entendue, on le dit ; pas entendue, on ne pénalise pas
+      const y = res.hitRate >= 0.88 && ex <= Math.max(1, Math.round(n * 0.08)) && res.mae <= 55 ? 1 : res.hitRate >= 0.7 && res.mae <= 90 ? 0.5 : 0;
+      if (res.voiceShare != null && res.voiceShare >= 0.15) fb.push({ kind: 'good', text: 'Voix bien présente ✓' });
+      else if (res.voiceShare != null) fb.push({ kind: 'info', text: 'Ta voix se mêle à la guitare (je ne la sépare pas toujours) : garde-la du début à la fin, c’est tout l’exercice.' });
       rhythmFeedback(res, (extra && extra.score) || rhythmScore({ strum: p.p, seq: p.seq, bpc: 4, tempo: p.tempo }), 55).forEach(f => fb.push(f));
       const solo = ctx && ctx.patternStat ? ctx.patternStat(p.p) : null;
       if (solo && solo.mae && isFinite(res.mae)) { const cost = res.mae - solo.mae; if (cost > 8) fb.push({ kind: 'info', text: 'Avec la voix, ton écart au clic passe de ' + f0(solo.mae) + ' à ' + f0(res.mae) + ' ms : la main droite n’est pas encore tout à fait automatique. Reviens au palier précédent quelques prises.' }); }
@@ -689,13 +708,13 @@
       let score;
       if (pat.id === 'r0') {
         // un coup à chaque changement d'accord (et au début de chaque mesure)
-        score = rhythmScore({ seq, bpc: 2, tempo, bars: sec.bars.length, sub: 1 });
+        score = rhythmScore({ seq, bpc: 2, tempo, bars: sec.bars.length, sub: 1, capo: sg.capo });
         score.events = score.events.filter((e, i, arr) => e.beat % 4 === 0 || (e.beat % 2 === 0 && e.v !== (arr.find(z => z.beat === e.beat - 2) || {}).v));
         score.strum = 'r0';
-      } else score = rhythmScore({ strum: pat.id, seq, bpc: 2, tempo, bars: sec.bars.length });
+      } else score = rhythmScore({ strum: pat.id, seq, bpc: 2, tempo, bars: sec.bars.length, capo: sg.capo });
       return [
-        { t: 'show', songSection: { song: sg.id, sec: p.sec }, label: sg.title + ' — ' + sec.name, sub: tempo + ' BPM (' + Math.round(p.ratio * 100) + ' % du tempo) · ' + pat.name, pattern: pat.id },
-        { t: 'listen', play: { kind: 'pattern', strum: pat.id, seq: seq.slice(0, 4), bpc: 2, tempo, bars: 2 }, label: 'Le début, au tempo de travail' },
+        { t: 'show', songSection: { song: sg.id, sec: p.sec }, label: sg.title + ' — ' + sec.name, sub: (sg.capo ? 'Capo en case ' + sg.capo + ' · ' : '') + tempo + ' BPM (' + Math.round(p.ratio * 100) + ' % du tempo) · ' + pat.name, pattern: pat.id },
+        { t: 'listen', play: { kind: 'pattern', strum: pat.id, seq: seq.slice(0, 4), bpc: 2, tempo, bars: 2, capo: sg.capo }, label: 'Le début, au tempo de travail' },
         { t: 'play', label: sec.name + ' : sans t’arrêter', rec: { kind: 'rhythm', tol: 70, save: true }, score, showSong: { song: sg.id, sec: p.sec } },
       ];
     },

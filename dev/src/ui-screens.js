@@ -17,16 +17,16 @@
     const s = S(), app = document.getElementById('app');
     if (!s.onboarded) { app.innerHTML = onboarding(); const tb = document.querySelector('.tabbar'); if (tb) tb.remove(); return; }
     if (!U.inSession() && St.maybeNewCycle(s)) { Store.save(s, true); planCache = null; setTimeout(() => U.toast('Nouveau cycle de 16 semaines : on repart du bloc Fondations, avec tes niveaux actuels.', 5000), 300); }
-    const html = ({ home, progress, songs, studio, tools, settings, science })[screen]();
+    const html = (({ home, progress, songs, studio, tools, settings, science })[screen] || home)();
     app.innerHTML = html;
     let tb = document.querySelector('.tabbar');
     if (!tb) { tb = document.createElement('nav'); tb.className = 'tabbar'; tb.setAttribute('aria-label', 'Navigation'); document.body.appendChild(tb); }
     tb.innerHTML = TABS.map(([id, ic, lab]) => `<button class="tab ${screen === id || (id === 'home' && (screen === 'settings' || screen === 'science')) ? 'on' : ''}" data-act="tab" data-arg="${id}" aria-label="${lab}"${screen === id ? ' aria-current="page"' : ''}>${U.icon(ic)}<span>${lab}</span></button>`).join('');
-    if (screen === 'songs' && songOpen && !recList) loadRecs();
+    if (screen === 'songs' && songOpen && !songEdit) { if (recList && recList.song === songOpen) fillRecs(); else loadRecs(); }
     if (screen === 'tools' && toolOpen === 'tuner') startToolTuner();
   };
   U.on('tab', id => { stopTools(); screen = id; songOpen = id === 'songs' ? songOpen : null; toolOpen = null; U.render(); window.scrollTo(0, 0); });
-  U.on('go', id => { stopTools(); screen = id; U.render(); window.scrollTo(0, 0); });
+  U.on('nav', id => { stopTools(); screen = id; U.render(); window.scrollTo(0, 0); });
   U.invalidateRecs = () => { recList = null; };
   const topbar = (title, back) => `<header class="topbar">${back ? `<button class="iconbtn" data-act="${back.act}" ${back.arg != null ? `data-arg="${esc(back.arg)}"` : ''} aria-label="Retour">${U.icon('back', 22)}</button>` : ''}<h1 class="grow">${esc(title)}</h1></header>`;
 
@@ -50,7 +50,7 @@
     const s = S(), t = todayRec(), week = St.programWeek(s), blk = P.block(week);
     const weeks = Array.from({ length: 16 }, (_, i) => `<i class="${i + 1 < week ? 'done' : i + 1 === week ? 'now' : ''} ${(i + 1) % 4 === 0 ? 'b' : ''}"></i>`).join('');
     const dl = s.deadline && s.deadline.date ? St.dayDiff(St.today(), s.deadline.date) : null;
-    let h = `<header class="topbar"><div class="brand"><i></i>ACCORD</div><div class="row"><span class="tag accent">${(s.program.cycle || 1) > 1 ? 'Cycle ' + s.program.cycle + ' · ' : ''}S${week} · ${esc(blk.name)}</span><button class="iconbtn" data-act="go" data-arg="settings" aria-label="Réglages">${U.icon('settings', 22)}</button></div></header><section class="screen">`;
+    let h = `<header class="topbar"><div class="brand"><i></i>ACCORD</div><div class="row"><span class="tag accent">${(s.program.cycle || 1) > 1 ? 'Cycle ' + s.program.cycle + ' · ' : ''}S${week} · ${esc(blk.name)}</span><button class="iconbtn" data-act="nav" data-arg="settings" aria-label="Réglages">${U.icon('settings', 22)}</button></div></header><section class="screen">`;
     h += `<div class="card hero"><div class="small muted">${esc(U.dateLong(t.date))}${s.profile.name ? ' · ' + esc(s.profile.name) : ''}</div><h1 style="margin-top:2px">Bloc ${blk.n} · ${esc(blk.name)}</h1><p class="muted" style="margin-top:6px">${esc(blk.goal)}</p><div class="weeks" style="margin-top:12px" aria-label="Semaine ${week} sur 16">${weeks}</div>${weekCount(s, week)}</div>`;
     if (s.current && s.current.plan && St.dayDiff(s.current.date || St.today(), St.today()) <= 1) h += `<div class="card"><h3>Séance en cours</h3><p class="small muted" style="margin:4px 0 10px">${esc(s.current.plan.title || '')} — bloc ${s.current.idx + 1}/${s.current.plan.items.length}</p><div class="row">${btn('resume', 'Reprendre', 'primary grow')}${btn('drop-current', 'Abandonner', 'ghost')}</div></div>`;
     if (dl != null && dl >= 0) h += `<div class="card flat"><div class="row between"><div><div class="small muted">Échéance</div><h3>${esc(s.deadline.label || 'Échéance')}</h3></div><div class="big-num" style="font-size:34px">J−${dl}</div></div></div>`;
@@ -191,11 +191,10 @@
   function songEditor() {
     const e = songEdit;
     let h = topbar(e.id ? 'Modifier la chanson' : 'Nouvelle chanson', { act: 'song-cancel' }) + '<section class="screen">';
-    const parsed = e.text ? T.parseSong(e.text) : null;
     h += `<label class="field">Titre<input type="text" data-input="se-title" value="${esc(e.title)}" placeholder="Titre de la chanson"></label>
       <label class="field">Artiste<input type="text" data-input="se-artist" value="${esc(e.artist || '')}" placeholder="(facultatif)"></label>
       <label class="field">Grille (accords, avec ou sans paroles)<textarea data-input="se-text" placeholder="[Couplet]&#10;G D Em C&#10;…&#10;&#10;ou : | C | G | Am | F |&#10;ou : [C]paroles [G]ici">${esc(e.text)}</textarea></label>`;
-    if (parsed) h += `<div class="card flat"><p class="small">${parsed.uniq.length ? 'Accords trouvés : <b>' + parsed.uniq.map(x => esc(T.pretty(x))).join(' · ') + '</b>' : '<span class="faint">' + esc(parsed.warnings[0] || '') + '</span>'}${parsed.capo ? ' · capo ' + parsed.capo + ' indiqué' : ''}</p></div>`;
+    h += `<div class="card flat" id="sePreview">${songPreview(e.text)}</div>`;
     h += `<div class="row"><label class="field grow">Tempo (BPM)<input type="number" min="40" max="200" data-input="se-tempo" value="${e.tempo}"></label><label class="field grow">Temps par accord<select data-change="se-bpc">${[[8, '2 mesures'], [4, '1 mesure'], [2, '½ mesure']].map(([v, l]) => `<option value="${v}" ${e.bpc === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label class="field">Rythmique<select data-change="se-strum">${T.STRUMS.map(p => `<option value="${p.id}" ${e.strum === p.id ? 'selected' : ''}>${esc(p.name)} (${esc(p.slots)})</option>`).join('')}</select></label>
       <p class="tiny faint">Le tempo : tape-le avec l’outil Métronome (« taper le tempo ») en écoutant la chanson. Les paroles collées restent sur ton téléphone.</p>
@@ -204,7 +203,13 @@
   }
   U.on('se-title', v => { songEdit.title = v; });
   U.on('se-artist', v => { songEdit.artist = v; });
-  U.on('se-text', v => { songEdit.text = v; clearTimeout(songEdit._t); songEdit._t = setTimeout(() => { const ta = document.activeElement; const pos = ta && ta.selectionStart; U.render(); const t2 = document.querySelector('[data-input="se-text"]'); if (t2 && pos != null) { t2.focus(); t2.setSelectionRange(pos, pos); } }, 900); });
+  /** Aperçu de la grille collée : accords reconnus, capo indiqué (mis à jour sans redessiner l'écran, pour garder le clavier). */
+  function songPreview(text) {
+    if (!text || !text.trim()) return '<p class="small faint">Les accords reconnus s’afficheront ici.</p>';
+    const parsed = T.parseSong(text);
+    return `<p class="small">${parsed.uniq.length ? 'Accords trouvés : <b>' + parsed.uniq.map(x => esc(T.pretty(x))).join(' · ') + '</b>' : '<span class="faint">' + esc(parsed.warnings[0] || 'Aucun accord reconnu.') + '</span>'}${parsed.capo ? ' · capo ' + parsed.capo + ' indiqué' : ''}${parsed.title && !songEdit.title ? ' · titre : ' + esc(parsed.title) : ''}</p>`;
+  }
+  U.on('se-text', v => { songEdit.text = v; clearTimeout(songEdit._t); songEdit._t = setTimeout(() => { const b = document.getElementById('sePreview'); if (b) b.innerHTML = songPreview(songEdit.text); }, 500); });
   U.on('se-tempo', v => { songEdit.tempo = Math.max(40, Math.min(200, +v || 90)); });
   U.on('se-bpc', v => { songEdit.bpc = +v; });
   U.on('se-strum', v => { songEdit.strum = v; });
@@ -215,8 +220,8 @@
     clearTimeout(e._t);
     const parsed = T.parseSong(e.text);
     if (!parsed.seq.length) { U.toast('Aucun accord reconnu dans la grille.'); return; }
-    if (e.id) { const song = s.songs.find(x => x.id === e.id); Object.assign(song, { title: e.title || song.title, artist: e.artist || '', text: e.text, tempo: e.tempo, strum: e.strum, bpc: e.bpc }); songOpen = song.id; }
-    else { const song = St.makeSong(e.text, { title: e.title, artist: e.artist, tempo: e.tempo, strum: e.strum, bpc: e.bpc }); s.songs.push(song); if (!s.workSong) s.workSong = song.id; songOpen = song.id; }
+    if (e.id) { const song = s.songs.find(x => x.id === e.id); Object.assign(song, { title: e.title || song.title, artist: e.artist || '', text: e.text, tempo: e.tempo, strum: e.strum, bpc: e.bpc, capo: parsed.capo != null ? parsed.capo : song.capo }); songOpen = song.id; recList = null; }
+    else { const song = St.makeSong(e.text, { title: e.title || parsed.title, artist: e.artist || parsed.artist, tempo: e.tempo, strum: e.strum, bpc: e.bpc }); s.songs.push(song); if (!s.workSong) s.workSong = song.id; songOpen = song.id; }
     songEdit = null; planCache = null; save(); U.render(); window.scrollTo(0, 0);
   });
   U.on('song-delete', () => { const s = S(); if (!songEdit || !songEdit.id) return; if (!songEdit._armed) { songEdit._armed = true; U.toast('Touche encore pour supprimer.'); return; } s.songs = s.songs.filter(x => x.id !== songEdit.id); if (s.workSong === songEdit.id) s.workSong = s.songs[0] ? s.songs[0].id : null; songEdit = null; songOpen = null; save(); U.render(); });
@@ -225,14 +230,14 @@
     let h = topbar(song.title, { act: 'song-back' }) + '<section class="screen">';
     if (!info.ok) return h + `<p class="notice">${esc(info.warnings[0] || 'Grille illisible.')}</p>${btn('song-edit', 'Modifier', 'block')}</section>`;
     h += `<div class="card hero"><div class="row between"><div class="grow"><div class="small muted">${esc(song.artist || '')}${info.key ? (song.artist ? ' · ' : '') + 'en ' + esc(T.keyName(T.mod12(info.key.tonic), info.key.minor)) : ''}</div><h2>Prête à ${Math.round(100 * (rd ? rd.score : 0))} %</h2><p class="small muted" style="margin-top:4px">${rd && rd.bottleneck ? 'À travailler : ' + esc(rd.bottleneck.text) : 'Tout est en place : filage !'}</p></div>${U.ready(rd ? rd.score : 0)}</div>
-      <div class="row wrap" style="margin-top:10px">${song.id === s.workSong ? '<span class="tag accent">Chanson en travail</span>' : btn('song-work', 'Travailler cette chanson', 'small primary', song.id)}${btn('song-play', '▶ Jouer avec moi', 'small')}${btn('song-edit', 'Modifier', 'small ghost')}</div></div>`;
+      <div class="row wrap" style="margin-top:10px">${song.id === s.workSong ? '<span class="tag accent">Chanson en travail</span>' : btn('song-work', 'Travailler cette chanson', 'small primary', song.id)}${btn('sd-play', '▶ Jouer avec moi', 'small')}${btn('song-edit', 'Modifier', 'small ghost')}</div></div>`;
     // capo
-    const opts = info.capoOptions;
+    const opts = info.capoOptions.filter((o, i, a) => o.capo === info.capo || o.cost <= a[0].cost + 1.5).slice(0, 4);
     h += `<div class="card"><h3>Capodastre ${info.capo ? 'case ' + info.capo : ': aucun'}</h3><p class="small muted" style="margin:4px 0 8px">Même son, formes plus faciles. Choisis aussi selon ta voix : « Transposer » monte ou descend toute la chanson.</p><div class="chips">${opts.map(o => `<button class="chip ${o.capo === info.capo ? 'on' : ''}" data-act="song-capo" data-arg="${o.capo}">Capo ${o.capo} · ${esc(o.shapes.map(T.pretty).join(' '))}</button>`).join('')}</div><div class="row" style="margin-top:8px">${btn('song-tr', '− ½ ton', 'small', '-1')}<span class="small muted">Transposition : ${song.transpose > 0 ? '+' : ''}${song.transpose || 0}</span>${btn('song-tr', '+ ½ ton', 'small', '1')}</div>${info.simplified.length ? `<p class="tiny faint" style="margin-top:6px">Simplifié : ${info.simplified.map(x => esc(T.pretty(x.shape)) + ' → ' + esc(T.pretty(x.as))).join(', ')}.</p>` : ''}</div>`;
     h += `<div class="card"><h3>Les accords à jouer</h3>${U.diagrams(info.uniq, { size: 'small' })}</div>`;
     if (rd && rd.changes.length) h += `<div class="card"><h3>Changements</h3><p class="small muted" style="margin:2px 0 8px">Il te faut ≈ ${rd.changes[0].need} changements/min (tempo ${song.tempo}, avec de la marge).</p>${rd.changes.map(c => `<div class="row between small" style="padding:4px 0"><span>${esc(vSym(c.a))} ⇄ ${esc(vSym(c.b))} <span class="faint">×${c.n}</span></span><span>${c.best ? c.best + '/min' : 'à mesurer'} ${c.ratio >= 1 ? '✓' : ''}</span></div>`).join('')}<div style="margin-top:8px">${btn('song-minute', 'Travailler le plus faible', 'small', rd.changes[0].a + '|' + rd.changes[0].b)}</div></div>`;
     h += `<div class="card"><h3>Rythmique : ${esc((T.strum(song.strum) || {}).name || '')}</h3><div style="margin-top:8px">${U.pattern(song.strum)}</div><p class="small muted" style="margin-top:6px">${rd ? 'Ton record : ' + ((s.patterns[song.strum] || {}).best || 0) + ' BPM · en chantant : ' + ((s.chant[song.strum] || {}).best || 0) + ' BPM' : ''}</p></div>`;
-    h += `<div class="card"><h3>Grille</h3>${info.sections.map(sec => `<h3 class="small muted" style="margin-top:10px">${esc(sec.name)}</h3><div class="grid" style="margin-top:4px">${sec.bars.map(b => `<div class="barc">${b.map(vSym).join(' ')}</div>`).join('')}</div>${sec.lines.some(l => l.lyrics) ? `<div class="lyrics small" style="margin-top:6px">${sec.lines.filter(l => l.lyrics || l.chords.length).map(l => (l.chords.length ? `<span class="ch">${l.chords.map(c => esc(T.pretty(T.transposeSym(c, -info.capo)))).join(' ')}</span>  ` : '') + esc(l.lyrics || '')).join('\n')}</div>` : ''}`).join('')}</div>`;
+    h += `<div class="card"><h3>Grille</h3>${info.sections.map((sec, si) => `<h3 class="small muted" style="margin-top:10px">${esc(sec.name)}${rd && rd.sections[si] ? ' · jouée à ' + Math.round(100 * rd.sections[si]) + ' % du tempo' : ''}</h3><div class="grid" style="margin-top:4px">${sec.bars.map(b => `<div class="barc">${b.map(vSym).join(' ')}</div>`).join('')}</div>${sec.lines.some(l => l.lyrics) ? `<div class="lyrics small" style="margin-top:6px">${sec.lines.filter(l => l.lyrics || l.chords.length).map(l => (l.chords.length ? `<span class="ch">${l.chords.map(c => esc(T.pretty(T.transposeSym(c, -info.capo)))).join(' ')}</span>  ` : '') + esc(l.lyrics || '')).join('\n')}</div>` : ''}`).join('')}</div>`;
     h += `<div class="card"><h3>Tes prises</h3><div id="recBox" class="list" style="margin-top:6px"><p class="small faint">…</p></div></div>`;
     h += `<div class="card flat"><h3>Échéance</h3><p class="small muted" style="margin:4px 0 8px">Une date où tu veux la jouer (anniversaire, scène ouverte) : les dernières séances s’allègent pour arriver en forme.</p><div class="row"><input type="date" data-change="song-deadline" value="${s.deadline && s.deadline.song === song.id ? esc(s.deadline.date) : ''}">${s.deadline && s.deadline.song === song.id ? btn('song-deadline-clear', 'Retirer', 'small ghost') : ''}</div></div>`;
     h += '</section>';
@@ -240,8 +245,12 @@
   }
   async function loadRecs() {
     const id = songOpen; if (!id) return;
-    recList = await Store.listRecs(r => r.kind === 'song' && r.song === id);
-    const box = document.getElementById('recBox'); if (!box) return;
+    const list = await Store.listRecs(r => r.kind === 'song' && r.song === id);
+    list.song = id; recList = list;
+    if (songOpen === id) fillRecs();
+  }
+  function fillRecs() {
+    const box = document.getElementById('recBox'); if (!box || !recList) return;
     box.innerHTML = recList.length ? recList.slice(0, 12).map(r => `<div class="row between small"><span>${esc(U.dateFr(new Date(r.ts).toISOString().slice(0, 10)))} · ${esc(r.label || '')} · ${Math.round(r.sec)} s</span><span class="row">${btn('rec-play', '▶', 'small', r.id)}${btn('rec-keep', r.keep ? '★' : '☆', 'small ghost', r.id)}</span></div>`).join('') : '<p class="small faint">Aucune prise pour l’instant : elles s’enregistrent pendant les exercices « Ma chanson » et « Filage ».</p>';
   }
   U.on('rec-play', async id => { A.stopAll(); const r = await Store.getRec(id); if (r) A.playPcm(r.pcm, r.sr); });
@@ -250,26 +259,26 @@
   U.on('song-edit', () => { const song = S().songs.find(x => x.id === songOpen); if (song) { songEdit = { id: song.id, title: song.title, artist: song.artist, text: song.text, tempo: song.tempo, strum: song.strum, bpc: song.bpc }; U.render(); } });
   U.on('song-work', id => { S().workSong = id; planCache = null; save(); U.render(); U.toast('Les séances vont se régler sur cette chanson.'); });
   U.on('song-capo', v => { const song = S().songs.find(x => x.id === songOpen); if (song) { song.capo = +v; planCache = null; save(); U.render(); } });
-  U.on('song-tr', v => { const song = S().songs.find(x => x.id === songOpen); if (song) { song.transpose = Math.max(-6, Math.min(6, (song.transpose || 0) + +v)); song.capo = null; planCache = null; save(); U.render(); A.ensure().then(() => { const info = St.songInfo(song); if (info.ok) A.play({ kind: 'progression', seq: info.seq.slice(0, 4), bpc: 2, tempo: song.tempo }); }); } });
+  U.on('song-tr', v => { const song = S().songs.find(x => x.id === songOpen); if (song) { song.transpose = Math.max(-6, Math.min(6, (song.transpose || 0) + +v)); song.capo = null; planCache = null; save(); U.render(); A.ensure().then(() => { const info = St.songInfo(song); if (info.ok) A.play({ kind: 'progression', seq: info.seq.slice(0, 4), bpc: 2, tempo: song.tempo, capo: info.capo }); }); } });
   U.on('song-deadline', v => { const s = S(), song = s.songs.find(x => x.id === songOpen); if (!song) return; s.deadline = v ? { date: v, label: song.title, song: song.id } : null; save(); U.render(); });
   U.on('song-deadline-clear', () => { S().deadline = null; save(); U.render(); });
-  U.on('song-minute', key => { const [a, b] = key.split('|'); const s = S(); [a, b].forEach(id => St.introduce(s, id)); save(); single('minute', { fixed: null, takes: 3, focus: [a, b] }); });
-  U.on('song-play', async () => {
+  U.on('song-minute', key => { const [a, b] = key.split('|'); const s = S(); [a, b].forEach(id => St.introduce(s, id)); save(); single('minute', { takes: 3, focusPair: [a, b] }); });
+  U.on('sd-play', async () => {
     const s = S(), song = s.songs.find(x => x.id === songOpen); if (!song) return;
     const info = St.songInfo(song); if (!info.ok) return;
     await A.ensure(); A.stopAll();
     const seq = info.sections.flatMap(sec => C.sectionSeq(sec));
-    const sc = C.rhythmScore({ strum: song.strum, seq, bpc: 2, tempo: song.tempo, bars: Math.ceil(seq.length / 2) });
+    const sc = C.rhythmScore({ strum: song.strum, seq, bpc: 2, tempo: song.tempo, bars: Math.ceil(seq.length / 2), capo: info.capo });
     const t0 = A.now() + 0.3; A.scheduleScore(sc, t0);
     U.toast('Lecture de la grille — touche « Chansons » pour arrêter.', 3000);
   });
 
   /* ================================================================ STUDIO */
-  let studio = null;
+  let stu = null;
   function studioState() {
     const s = S();
-    if (!studio) studio = { key: s.studioKey != null ? s.studioKey : 7, minor: false, prog: ['I', 'V', 'vi', 'IV'], tempo: 88, strum: 'r4', bpc: 4, idea: null };
-    return studio;
+    if (!stu) stu = { key: s.studioKey != null ? s.studioKey : 7, minor: false, prog: ['I', 'V', 'vi', 'IV'], tempo: 88, strum: 'r4', bpc: 4, idea: null };
+    return stu;
   }
   function studio() {
     const s = S(), st = studioState();
@@ -305,11 +314,15 @@
     const vids = st.prog.map(dg => T.playable(T.degreeChord(dg, st.key))).filter(Boolean).map(p => p.v.id);
     if (!vids.length) return;
     await A.ensure(); A.stopAll(); clearTimeout(loopTimer);
+    // boucle calée sur la mesure : chaque tour est programmé sur l'horloge audio, juste avant la fin du précédent
+    const sig = (T.strum(st.strum) || { sig: 4 }).sig, beat = 60 / st.tempo;
+    const bars = Math.max(1, Math.ceil(vids.length * st.bpc / sig));
+    let next = A.now() + 0.15;
     const loop = () => {
-      const bars = Math.max(1, Math.ceil(vids.length * st.bpc / 4));
       const sc = C.rhythmScore({ strum: st.strum, seq: vids, bpc: st.bpc, tempo: st.tempo, bars });
-      const t0 = A.now() + 0.1; const end = A.scheduleScore(sc, t0);
-      loopTimer = setTimeout(loop, Math.max(500, (end - 1.2 - A.now()) * 1000));
+      A.scheduleScore(sc, next);
+      next += sc.bars * sc.sig * beat;
+      loopTimer = setTimeout(loop, Math.max(50, (next - A.now() - 0.35) * 1000));
     };
     loop();
   });
@@ -324,8 +337,8 @@
   U.on('st-del-idea', async id => { const s = S(), idea = s.ideas.find(x => x.id === id); if (!idea) return; if (idea._armed) { s.ideas = s.ideas.filter(x => x.id !== id); if (idea.rec) await Store.deleteRec(idea.rec); save(); U.render(); } else { idea._armed = true; U.toast('Touche encore ✕ pour supprimer.'); } });
 
   /* ================================================================ OUTILS */
-  let tunerRun = 0;
-  function stopTools() { tunerRun++; A.metronome.stop(); clearTimeout(loopTimer); }
+  let tunerActive = false;
+  function stopTools() { A.metronome.stop(); clearTimeout(loopTimer); if (A.ctx()) A.stopAll(); }
   function tools() {
     if (toolOpen === 'tuner') return topbar('Accordeur', { act: 'tool-back' }) + `<section class="screen"><div class="card"><div class="tuner" id="toolTuner"><div class="note">♪</div><p class="muted">Joue une corde à vide et laisse-la sonner.</p></div></div>
       <div class="strings6">${T.OPEN.map((n, s) => `<button class="st ${toolTunerString === s ? 'on' : ''}" data-act="tt-string" data-arg="${s}"><b>${T.STRING_NUM[s]}</b>${esc(T.STRING_FR[s].split(' ')[0])}</button>`).join('')}</div><p class="tiny faint">Choisis une corde, ou laisse l’accordeur la deviner (touche-la de nouveau pour revenir en automatique). Diapason : La = ${S().profile.tuning || 440} Hz.</p></section>`;
@@ -342,29 +355,33 @@
   U.on('tool-back', () => { stopTools(); toolOpen = null; U.render(); });
   let toolTunerString = null;
   U.on('tt-string', s => { toolTunerString = toolTunerString === +s ? null : +s; U.render(); });
+  const tunerOpen = () => screen === 'tools' && toolOpen === 'tuner' && !U.inSession();
   async function startToolTuner() {
-    const my = ++tunerRun;
-    try { await A.ensure(); await A.openMic(); } catch (e) { const b = document.getElementById('toolTuner'); if (b) b.innerHTML = '<p class="muted">Micro indisponible.</p>'; return; }
+    if (tunerActive) return;
+    tunerActive = true;
+    try { await A.ensure(); await A.openMic(); } catch (e) { tunerActive = false; const b = document.getElementById('toolTuner'); if (b) b.innerHTML = '<p class="muted">Micro indisponible : autorise le micro pour ce site dans les réglages du navigateur.</p>'; return; }
     const hist = [];
-    while (my === tunerRun && screen === 'tools' && toolOpen === 'tuner') {
+    while (tunerOpen()) {
       const f = A.frame(4096), r = f ? D.tune(f.x, f.sr, A.tuning) : null;
       const box = document.getElementById('toolTuner');
       if (box && r && isFinite(r.f0)) {
         const s = toolTunerString, target = s != null ? T.OPEN[s] : r.target, c0 = 100 * (r.midi - target);
         if (Math.abs(c0) < 300) hist.push(c0); if (hist.length > 5) hist.shift();
+        if (!hist.length) { await U.sleep(90); continue; }
         const c = D.median(hist), ok = Math.abs(c) <= 4;
-        box.innerHTML = `<div class="small muted">Corde ${T.STRING_NUM[s != null ? s : r.string]} · ${esc(T.STRING_FR[s != null ? s : r.string])}</div><div class="note">${esc(T.noteName(target))}</div><div class="gauge"><div class="scale"></div><div class="needle ${ok ? 'ok' : ''}" style="left:${50 + Math.max(-50, Math.min(50, c))}%"></div></div><div class="cents">${c > 0 ? '+' : ''}${Math.round(c)} cents · ${ok ? 'juste ✓' : c < 0 ? 'trop bas' : 'trop haut'}</div>`;
+        box.innerHTML = `<div class="small muted">Corde ${T.STRING_NUM[s != null ? s : r.string]} · ${esc(T.STRING_FR[s != null ? s : r.string])}</div><div class="note">${esc(T.noteName(target).replace(/-?\d+$/, ''))}</div><div class="gauge"><div class="scale"></div><div class="needle ${ok ? 'ok' : ''}" style="left:${50 + Math.max(-50, Math.min(50, c))}%"></div></div><div class="cents">${c > 0 ? '+' : ''}${Math.round(c)} cents · ${ok ? 'juste ✓' : c < 0 ? 'trop bas' : 'trop haut'}</div>`;
       }
       await U.sleep(90);
     }
-    A.closeMic();
+    tunerActive = false;
+    if (!U.inSession()) A.closeMic();
   }
   let metroState = { tempo: 80, sig: 4, sub: 1, silent: false, kind: 'bois' }, taps = [];
   function metroScreen() {
     const m = metroState;
     return topbar('Métronome', { act: 'tool-back' }) + `<section class="screen"><div class="card center"><div class="big-num">${m.tempo}</div><div class="muted">BPM</div><div class="beatdots" id="mDots" style="margin-top:12px">${Array.from({ length: m.sig }, (_, i) => `<i class="${i === 0 ? 'first' : ''}"></i>`).join('')}</div>
       <div class="row" style="justify-content:center;margin-top:12px">${btn('m-tempo', '−5', 'small', '-5')}${btn('m-tempo', '−1', 'small', '-1')}${btn('m-tempo', '+1', 'small', '1')}${btn('m-tempo', '+5', 'small', '5')}</div>
-      <div style="margin-top:12px">${btn('m-toggle', A.metronome.on ? '■ Arrêter' : '▶ Démarrer', 'primary big block')}</div>${btn('m-tap', 'Taper le tempo', 'block')}</div>
+      <div class="col" style="margin-top:12px">${btn('m-toggle', A.metronome.on ? '■ Arrêter' : '▶ Démarrer', 'primary big block')}${btn('m-tap', 'Taper le tempo', 'block')}</div></div>
       <div class="card"><div class="small muted">Mesure</div><div class="chips" style="margin-top:6px">${[2, 3, 4, 6].map(v => `<button class="chip ${m.sig === v ? 'on' : ''}" data-act="m-sig" data-arg="${v}">${v} temps</button>`).join('')}</div>
       <div class="small muted" style="margin-top:10px">Subdivision</div><div class="chips" style="margin-top:6px">${[[1, 'Noires'], [2, 'Croches'], [4, 'Doubles']].map(([v, l]) => `<button class="chip ${m.sub === v ? 'on' : ''}" data-act="m-sub" data-arg="${v}">${l}</button>`).join('')}</div>
       <label class="switch"><span>Le clic se tait (2 mesures sur 4) : pour muscler ta pulsation intérieure</span><input type="checkbox" data-change="m-silent" ${m.silent ? 'checked' : ''}></label>
@@ -384,7 +401,7 @@
     const list = T.OPEN_DB.filter(v => (dictFilter === 'barre' ? T.isBarre(v) || v.tags.includes('barre-prep') : v.tags.includes(dictFilter) && (dictFilter !== 'open' || (!v.tags.includes('7') && !v.tags.includes('color') && !v.tags.includes('pop')))));
     return topbar('Dictionnaire d’accords', { act: 'tool-back' }) + `<section class="screen"><div class="chips">${fams.map(([k, l]) => `<button class="chip ${dictFilter === k ? 'on' : ''}" data-act="dict-f" data-arg="${k}">${l}</button>`).join('')}</div>
       <p class="small muted">Touche un accord pour l’entendre. Chiffres = doigts (1 index … 4 auriculaire, P pouce) ; o = corde à vide ; × = ne pas jouer.</p>
-      <div class="diagrams">${list.map(v => `<button class="card flat" style="padding:8px;cursor:pointer" data-act="dict-play" data-arg="${esc(v.id)}">${U.diagram(v.id, { size: 'small' })}<div class="tiny faint">difficulté ${fr(v.d)}${S().vocab.includes(v.id) ? ' · ✓' : ''}</div></button>`).join('')}</div></section>`;
+      <div class="dict">${list.map(v => `<button class="card flat" data-act="dict-play" data-arg="${esc(v.id)}">${U.diagram(v.id, { size: 'small' })}<div class="tiny faint">difficulté ${fr(v.d)}${S().vocab.includes(v.id) ? ' · ✓' : ''}</div></button>`).join('')}</div></section>`;
   }
   U.on('dict-f', f => { dictFilter = f; U.render(); });
   U.on('dict-play', async id => { await A.ensure(); A.stopAll(); A.play({ kind: 'arp', v: id, gap: 0.18 }); });
@@ -416,7 +433,7 @@
   function settings() {
     const s = S(), p = s.profile;
     const sw = (k, label, sub) => `<label class="switch"><span>${label}${sub ? `<br><span class="tiny faint">${sub}</span>` : ''}</span><input type="checkbox" data-change="pf-bool" data-arg="${k}" ${p[k] ? 'checked' : ''}></label>`;
-    let h = topbar('Réglages', { act: 'go', arg: 'home' }) + '<section class="screen">';
+    let h = topbar('Réglages', { act: 'nav', arg: 'home' }) + '<section class="screen">';
     h += `<div class="card"><h3>Toi</h3><div class="col" style="margin-top:8px"><label class="field">Prénom<input type="text" data-change="pf-text" data-arg="name" value="${esc(p.name)}"></label>
       <div class="small muted">Objectifs</div><div class="chips">${[['accompagner', 'M’accompagner en chantant'], ['composer', 'Composer'], ['picking', 'Jouer aux doigts']].map(([k, l]) => `<button class="chip ${p.goals[k] ? 'on' : ''}" data-act="pf-goal" data-arg="${k}">${l}</button>`).join('')}</div>
       <label class="field">Quand je joue (créneau fixe)<input type="text" data-change="pf-plan" data-arg="when" value="${esc(p.plan.when)}" placeholder="ex. après le dîner"></label>
@@ -430,7 +447,7 @@
       <label class="field">Diapason (La)<select data-change="pf-num" data-arg="tuning">${[438, 440, 442].map(v => `<option value="${v}" ${p.tuning === v ? 'selected' : ''}>${v} Hz</option>`).join('')}</select></label>
       <label class="field">Thème<select data-change="pf-theme"><option value="" ${!p.theme ? 'selected' : ''}>Comme le téléphone</option><option value="dark" ${p.theme === 'dark' ? 'selected' : ''}>Sombre</option><option value="light" ${p.theme === 'light' ? 'selected' : ''}>Clair</option></select></label></div>`;
     h += `<div class="card"><h3>Sauvegarde</h3><p class="small muted" style="margin:4px 0 10px">Tout reste sur ce téléphone. Exporte de temps en temps (fichier à garder dans tes fichiers ou ton cloud).</p><div class="row">${btn('export', 'Exporter', 'grow')}<label class="btn grow">Importer<input type="file" accept=".json,application/json" data-change="import-file" style="display:none"></label></div><div style="margin-top:10px">${btn('reset-all', 'Tout effacer', 'ghost small')}</div></div>`;
-    h += `<div class="card flat">${btn('go', 'Comment ça marche (la science)', 'block', 'science')}<p class="tiny faint center" style="margin-top:8px">ACCORD ${esc(AC.VERSION || '')}</p></div>`;
+    h += `<div class="card flat">${btn('nav', 'Comment ça marche (la science)', 'block', 'science')}<p class="tiny faint center" style="margin-top:8px">ACCORD ${esc(AC.VERSION || '')}</p></div>`;
     return h + '</section>';
   }
   U.on('pf-bool', (v, el2) => { S().profile[el2.dataset.arg] = !!v; save(); });
@@ -452,7 +469,7 @@
     rd.readAsText(f);
   });
   let resetArmed = 0;
-  U.on('reset-all', () => { if (Date.now() - resetArmed < 3000) { Store.clear(); U.setState(St.newState()); onbStep = 0; screen = 'home'; U.render(); } else { resetArmed = Date.now(); U.toast('Touche encore pour TOUT effacer (pense à exporter avant).', 3000); } });
+  U.on('reset-all', () => { if (Date.now() - resetArmed < 3000) { Store.clear(); Store.clearRecs(); U.setState(St.newState()); onbStep = 0; screen = 'home'; U.render(); } else { resetArmed = Date.now(); U.toast('Touche encore pour TOUT effacer (pense à exporter avant).', 3000); } });
 
   /* ================================================================ SCIENCE */
   U.SOURCES = [
@@ -491,7 +508,7 @@
     ['Karplus & Strong (1983) · Jaffe & Smith (1983). Computer Music Journal 7(2).', 'Guitare de synthèse des modèles.'],
   ];
   function science() {
-    let h = topbar('Comment ça marche', { act: 'go', arg: 'settings' }) + '<section class="screen">';
+    let h = topbar('Comment ça marche', { act: 'nav', arg: 'settings' }) + '<section class="screen">';
     h += `<div class="card"><h3>Ce que mesure le micro</h3><ul class="small" style="margin:8px 0 0;padding-left:18px">
       <li><b>Chaque coup</b> : sa place par rapport au clic (± quelques millisecondes), les coups manqués et les coups en trop. Les clics du métronome sont aigus et repérés dans la prise : la latence du téléphone est mesurée à chaque fois.</li>
       <li><b>Les accords</b> : l’empreinte de chaque doigté (notes exactes, octaves comprises) est comparée au son ; une corde jouée à vide au lieu de sa case, une case voisine ou une corde à éviter qui sonne sont signalées.</li>
@@ -499,6 +516,8 @@
       <li><b>Changements par minute</b> : seuls les changements reconnus et propres comptent.</li>
       <li><b>Pulsation</b> : quand le clic se tait, le tempo réellement tenu et la dérive.</li>
       <li><b>Accordage</b> : les 6 cordes d’un seul coup (à ±1 cent sur nos tests), puis l’aiguille corde par corde.</li>
+      <li><b>Capo</b> : les accords écrits sous « Capo N » sont des formes ; l’écoute en tient compte, et un capo oublié (ou mis sans le dire) est repéré.</li>
+      <li><b>Chanter en jouant</b> : c’est la main droite qui est mesurée pendant que tu chantes ; la voix, mêlée à la guitare, n’est pas toujours séparable.</li>
       <li>Testé sur des guitares de synthèse réalistes (cordes inharmoniques, micro de téléphone, réverbération, bruit). Une corde étouffée dans un accord gratté ne s’entend pas toujours : l’exercice « corde par corde » est là pour ça. Si la mesure te semble fausse, dis-le (« Mesure fausse ? »).</li></ul></div>`;
     h += `<div class="card"><h3>Comment tu progresses</h3><ul class="small" style="margin:8px 0 0;padding-left:18px">
       <li>Chaque compétence a un niveau estimé ; chaque exercice est généré pour que tu réussisses environ 4 prises sur 5. Un exercice nouveau démarre plus facile.</li>
@@ -522,7 +541,7 @@
       return `<section class="screen" style="padding-top:calc(30px + env(safe-area-inset-top))"><h1>D’où pars-tu ?</h1>
         ${corde ? `<div class="card hero"><div class="small muted">Données de l’app Corde trouvées sur ce téléphone</div><p class="small" style="margin-top:4px">${corde.days} jours de pratique (jusqu’au jour ${corde.maxDay}), ${corde.records} records. Proposition : <b>${esc(St.START_LEVELS[corde.suggest].label)}</b>.</p></div>` : ''}
         <div class="col">${Object.entries(St.START_LEVELS).map(([k, v]) => `<button class="btn block ${s.profile.start === k ? 'sel' : ''}" data-act="onb-level" data-arg="${k}">${esc(v.label)}</button>`).join('')}</div>
-        <p class="tiny faint">C’est un point de départ : le bilan d’entrée (15–20 min, au micro) mesurera ton vrai niveau.</p></section>`;
+        <p class="tiny faint">C’est un point de départ : si tu joues déjà, un bilan d’entrée (15–20 min, au micro) mesurera ton vrai niveau ; sinon on commence en douceur, et le premier bilan arrive en semaine 4.</p></section>`;
     }
     return `<section class="screen" style="padding-top:calc(30px + env(safe-area-inset-top))"><h1>Tes objectifs</h1>
       <div class="chips">${[['accompagner', 'M’accompagner en chantant'], ['composer', 'Composer mes chansons'], ['picking', 'Jouer aux doigts']].map(([k, l]) => `<button class="chip ${s.profile.goals[k] ? 'on' : ''}" data-act="pf-goal" data-arg="${k}">${l}</button>`).join('')}</div>

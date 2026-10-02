@@ -155,9 +155,15 @@
   }
   D.filtfilt = filtfilt;
   /** Enveloppe d'énergie (moyenne de x² par cases de `binMs` ms). */
+  /** Énergie moyenne par tranche de binMs : la tranche i couvre exactement [i·binMs, (i+1)·binMs) ms (22 ou 23
+      échantillons à 22 050 Hz pour 1 ms), pour que l'indice i corresponde bien à i ms sur toute la prise. */
   function energyEnv(x, fs, binMs) {
-    const L = Math.max(1, Math.round(fs * binMs / 1000)), n = Math.floor(x.length / L), e = new Float32Array(n);
-    for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < L; j++) { const v = x[i * L + j]; s += v * v; } e[i] = s / L; }
+    const step = fs * binMs / 1000, n = Math.floor(x.length / step), e = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = Math.round(i * step), b = Math.min(x.length, Math.round((i + 1) * step));
+      let s = 0; for (let j = a; j < b; j++) s += x[j] * x[j];
+      e[i] = s / Math.max(1, b - a);
+    }
     return e;
   }
   D.energyEnv = energyEnv;
@@ -267,8 +273,9 @@
     const d = le[i] - le[i - 1], fr = d > 0 ? clamp((le[i] - thr) / d, 0, 1) : 0;
     return (i - fr) / 1000 - D.ONSET_OFFSET;
   }
-  // décalage moyen entre cet instant et le début réel d'un coup (première corde) — étalonné sur la guitare de synthèse
-  D.ONSET_OFFSET = 0.010;
+  // décalage moyen entre cet instant et le début réel d'un coup (première corde) : biais mesuré −0,5 ms sur la guitare de
+  // synthèse des tests, donc 0 ; gardé comme réglage pour un étalonnage sur de vraies guitares
+  D.ONSET_OFFSET = 0.0;
   /** Fonction de détection SuperFlux sur une bande, moyenne par case. */
   function bandOdf(xb, n, hop, f0, f1) {
     const S = D.stft(xb, n, hop, f1 + 200);
@@ -451,7 +458,7 @@
   }
   const printCache = new Map();
   D.voicingPrint = function (v, a4) {
-    const key = v.id + ':' + (a4 || 440); let p = printCache.get(key); if (p) return p;
+    const key = v.id + (v.capo ? '@' + v.capo : '') + ':' + (a4 || 440); let p = printCache.get(key); if (p) return p;
     const lin = new Float64Array(NS);
     T.voicingNotes(v).forEach(n => { if (n == null) return; const at = noteAtom(n, a4); for (let i = 0; i < NS; i++) lin[i] += at[i]; });
     p = lin.map(x => Math.pow(x, COMP));
@@ -517,9 +524,12 @@
     const f0 = fitNotes(base, o);
     const foreign = [];
     const tries = [];
-    v.frets.forEach((f, s) => {
-      if (f > 0) { tries.push({ s, kind: 'open', note: T.OPEN[s] }); tries.push({ s, kind: 'fret+1', note: T.OPEN[s] + f + 1 }); if (f > 1) tries.push({ s, kind: 'fret-1', note: T.OPEN[s] + f - 1 }); }
-      else if (f < 0) tries.push({ s, kind: 'mute', note: T.OPEN[s] });
+    // erreurs testées sur la forme (avec capo, une corde « à vide » sonne à la case du capo)
+    const cp = v.capo || 0, shapeFrets = v.shape ? v.shape.frets : v.frets;
+    shapeFrets.forEach((f, s) => {
+      const open = T.OPEN[s] + cp;
+      if (f > 0) { tries.push({ s, kind: 'open', note: open }); tries.push({ s, kind: 'fret+1', note: open + f + 1 }); if (f > 1) tries.push({ s, kind: 'fret-1', note: open + f - 1 }); }
+      else if (f < 0) tries.push({ s, kind: 'mute', note: open });
     });
     for (const tr of tries) {
       if (notes.some(n => n != null && (n === tr.note))) continue;           // déjà une note de l'accord
@@ -641,13 +651,18 @@
     const ons = on.list.filter(o => o.t >= t0 && o.t <= t1);
     const win = Math.min(0.45 * (spec.slot || 0.25), 0.14);
     const g = D.matchGrid(exp, ons, win, { slot: spec.slot });
-    // coups attendus non trouvés : recherche guidée autour de l'instant attendu (ou prévu par la dérive)
+    const clickAt = (spec.clicks || []).map(c => c + L), vBlind = median(ons.map(o => o.v));
+    // un clic du métronome qui déborde dans la bande d'analyse n'apporte pas d'énergie grave nouvelle, un coup si
+    const clickOnly = o2 => clickAt.some(c => Math.abs(c - o2.t) < 0.015) && !(D.lowRise(on.xb, o2.t) > 2);
+    // coups attendus non trouvés : recherche guidée autour de l'instant attendu (ou prévu par la dérive) — un coup
+    // léger mais réel, pas un clic ni un reste de résonance
     exp.forEach((e, i) => {
       if (g.match[i]) return;
       let pred = e.t;
       if (e.free) { const prev = g.match.slice(0, i).reverse().find(Boolean); if (prev) pred += prev.d; }
       const go = D.guidedOnset(on, pred, win);
       if (!go || ons.some(o3 => Math.abs(o3.t - go.t) < 0.04)) return;
+      if (go.v < 0.3 * (vBlind || 0) || clickOnly(go)) return;
       ons.push(go);
       g.match[i] = { j: ons.length - 1, d: go.t - e.t, drift: e.free };
     });
@@ -660,13 +675,7 @@
     });
     // coups en trop : attaques franches (≥ 30 % de la force médiane des coups joués) non appariées
     const vMed = median(res.events.filter(e => e.hit).map(e => e.v));
-    const clickAt = (spec.clicks || []).map(c => c + L);
-    res.extras = g.extras.map(j => ons[j]).filter(o2 => {
-      if (!(o2.v >= 0.3 * (vMed || 0))) return false;
-      // un clic du métronome qui déborde dans la bande d'analyse : pas d'énergie grave nouvelle
-      if (clickAt.some(c => Math.abs(c - o2.t) < 0.012)) { const lf = D.lowRise(on.xb, o2.t); if (!(lf > 2)) return false; }
-      return true;
-    }).map(o2 => ({ t: o2.t - L, lvl: o2.lvl }));
+    res.extras = g.extras.map(j => ons[j]).filter(o2 => o2.v >= 0.3 * (vMed || 0) && !clickOnly(o2)).map(o2 => ({ t: o2.t - L, lvl: o2.lvl }));
     const hits = res.events.filter(e => e.hit);
     const clicked = hits.filter(e => !e.free);
     res.hitRate = exp.length ? hits.length / exp.length : 0;
@@ -690,18 +699,31 @@
     }
     // accords par segment (mesure) : spectre moyen hors attaques, comparé aux accords attendus de l'exercice
     if (spec.segments && spec.segments.length) {
-      const cand = [];
-      const add = id => { const v = T.voicing(id); if (v && !cand.some(c => c.id === v.id)) cand.push(v); };
-      spec.segments.forEach(sg => add(sg.v)); (spec.vocab || []).forEach(v => add(v.id || v));
-      res.chords = spec.segments.map(sg => {
-        const v = T.voicing(sg.v);
-        const obs = D.observe(x, (sg.t0 + L + 0.04) * FS, (sg.t1 + L - 0.01) * FS, { a4: spec.a4 });
-        if (!obs || !v) return { v: sg.v, ok: null };
-        const m = D.identify(obs, cand, spec.a4);
-        const sv = m.sim[v.id];
-        const ok = m.best === v.id || sv >= m.score - 0.01;
-        const dg = D.chordDiagnosis(obs, v, spec.a4);
-        return { v: sg.v, ok, sim: sv, heard: m.best, foreign: dg.foreign, missing: dg.missing };
+      const obsList = spec.segments.map(sg => D.observe(x, (sg.t0 + L + 0.04) * FS, (sg.t1 + L - 0.01) * FS, { a4: spec.a4 }));
+      const ids = Array.from(new Set(spec.segments.map(sg => sg.v).concat((spec.vocab || []).map(v => v.id || v)))).filter(id => T.voicing(id));
+      const judgeAt = cp => {
+        const cand = ids.map(id => T.withCapo(T.voicing(id), cp));
+        const out = spec.segments.map((sg, i) => {
+          const v = T.withCapo(T.voicing(sg.v), cp), obs = obsList[i];
+          if (!obs || !v) return { v: sg.v, ok: null };
+          const m = D.identify(obs, cand, spec.a4), sv = m.sim[v.id];
+          return { v: sg.v, ok: m.best === v.id || sv >= m.score - 0.01, sim: sv, heard: m.best, obs, voicing: v };
+        });
+        const done = out.filter(c => c.ok != null);
+        return { cp, out, okRate: done.length ? done.filter(c => c.ok).length / done.length : 0, mean: done.length ? mean(done.map(c => c.sim)) : 0 };
+      };
+      let best = judgeAt(spec.capo || 0);
+      // capo oublié (ou mis sans le dire) : si presque rien ne correspond, on essaie les cases 0 à 7 ; une case qui
+      // explique nettement mieux le son est retenue et signalée
+      if (best.okRate < 0.6 && obsList.filter(Boolean).length >= 2) {
+        let alt = null;
+        for (let k = 0; k <= 7; k++) { if (k === (spec.capo || 0)) continue; const e = judgeAt(k); if (e.okRate >= 0.75 && e.mean > best.mean + 0.1 && (!alt || e.mean > alt.mean)) alt = e; }
+        if (alt) { best = alt; res.capoHeard = alt.cp; }
+      }
+      res.chords = best.out.map(c => {
+        if (c.ok == null) return c;
+        const dg = D.chordDiagnosis(c.obs, c.voicing, spec.a4);
+        return { v: c.v, ok: c.ok, sim: c.sim, heard: c.heard, foreign: dg.foreign, missing: dg.missing };
       });
     }
     return res;
@@ -718,21 +740,35 @@
     const issues = D.issues(prep, lv);
     const res = { ok: !issues.includes('silence'), issues, snr: +lv.snr.toFixed(1) };
     if (!res.ok) return Object.assign(res, { strums: [], changes: 0, cpm: 0 });
-    const va = T.voicing(spec.a), vb = T.voicing(spec.b);
     const on = D.onsets(x, { hop: 0.008, combine: 0.12 });
     const ons = on.list.filter(o => o.t >= (spec.t0 || 0) && o.t <= (spec.t1 || Infinity));
     const vMed = median(ons.map(o => o.v));
-    res.strums = ons.filter(o => o.v >= 0.25 * vMed).map((o, i, arr) => {
-      const next = arr[i + 1];
-      const obs = D.observe(x, (o.t + 0.04) * FS, Math.min(((next ? next.t : o.t + 0.6) - 0.01), o.t + 0.7) * FS, { a4: spec.a4 });
-      if (!obs) return { t: o.t, chord: null };
-      const m = D.identify(obs, [va, vb], spec.a4);
-      const sa = m.sim[va.id], sb = m.sim[vb.id];
-      const chord = Math.max(sa, sb) >= 0.6 && m.margin >= 0.02 ? (sa > sb ? 'a' : 'b') : null;
+    const kept = ons.filter(o => o.v >= 0.25 * vMed);
+    const obsList = kept.map((o, i) => { const next = kept[i + 1]; return D.observe(x, (o.t + 0.04) * FS, Math.min(((next ? next.t : o.t + 0.6) - 0.01), o.t + 0.7) * FS, { a4: spec.a4 }); });
+    const strumsAt = cp => {
+      const va = T.withCapo(T.voicing(spec.a), cp), vb = T.withCapo(T.voicing(spec.b), cp);
+      return kept.map((o, i) => {
+        const obs = obsList[i];
+        if (!obs) return { t: o.t, chord: null };
+        const m = D.identify(obs, [va, vb], spec.a4);
+        const sa = m.sim[va.id], sb = m.sim[vb.id];
+        return { t: o.t, chord: Math.max(sa, sb) >= 0.6 && m.margin >= 0.02 ? (sa > sb ? 'a' : 'b') : null, sa, sb, sim: Math.max(sa, sb), obs, va, vb };
+      });
+    };
+    let strums = strumsAt(spec.capo || 0);
+    // capo oublié : presque aucun coup reconnu → on essaie les cases 0 à 7
+    const known = list => list.filter(z => z.chord).length;
+    if (strums.length >= 4 && known(strums) < 0.5 * strums.length) {
+      let alt = null;
+      for (let k = 0; k <= 7; k++) { if (k === (spec.capo || 0)) continue; const e = strumsAt(k); if (known(e) >= 0.75 * e.length && (!alt || known(e) > known(alt))) alt = e; }
+      if (alt) { strums = alt; res.capoHeard = alt[0].va.capo || 0; }
+    }
+    res.strums = strums.map(z => {
+      if (!z.chord) return { t: z.t, chord: null, sa: z.sa, sb: z.sb, sim: z.sim, foreign: [], missing: [] };
       // accord reconnu mais pas propre : corde à vide au lieu d'une case, case voisine, note unique absente
-      const other = chord === 'a' ? vb : va;
-      const dg = chord ? D.chordDiagnosis(obs, chord === 'a' ? va : vb, spec.a4, T.voicingNotes(other).filter(n => n != null)) : null;
-      return { t: o.t, chord, sa, sb, sim: Math.max(sa, sb), foreign: dg ? dg.foreign : [], missing: dg ? dg.missing : [] };
+      const v = z.chord === 'a' ? z.va : z.vb, other = z.chord === 'a' ? z.vb : z.va;
+      const dg = D.chordDiagnosis(z.obs, v, spec.a4, T.voicingNotes(other).filter(n => n != null));
+      return { t: z.t, chord: z.chord, sa: z.sa, sb: z.sb, sim: z.sim, foreign: dg.foreign, missing: dg.missing };
     });
     // une note étrangère nette (corde à vide au lieu d'une case, case voisine) : le changement ne compte pas ;
     // une note unique absente est signalée (indice plus faible) sans retirer le changement
@@ -772,8 +808,8 @@
       if (!o) return { v: c.v, hit: false };
       const after = on.list.find(z => z.t > o.t + 0.08);
       const obs = D.observe(x, (o.t + 0.04) * FS, Math.min((after ? after.t : o.t + 0.7) - 0.01, o.t + 0.7) * FS, { a4: spec.a4 });
-      const v = T.voicing(c.v);
-      const list = (spec.vocab || []).filter(z => z && z.id !== v.id).concat([v]);
+      const v = T.withCapo(T.voicing(c.v), spec.capo || 0);
+      const list = (spec.vocab || []).filter(z => z && z.id !== v.id).map(z => T.withCapo(z, spec.capo || 0)).concat([v]);
       const m = obs ? D.identify(obs, list, spec.a4) : null;
       const sim = m ? m.sim[v.id] : 0;
       const ok = !!m && (m.best === v.id || sim >= m.score - 0.01) && sim >= 0.6;
@@ -794,7 +830,7 @@
   D.analyzePlucks = function (pcm, sr, spec) {
     const prep = D.prepare(pcm, sr), x = prep.x, lv = D.levels(x);
     const issues = D.issues(prep, lv);
-    const v = T.voicing(spec.v), a4 = spec.a4 || 440;
+    const v = T.withCapo(T.voicing(spec.v), spec.capo || 0), a4 = spec.a4 || 440;
     const res = { ok: !issues.includes('silence'), issues, snr: +lv.snr.toFixed(1) };
     if (!res.ok || !v) return Object.assign(res, { strings: [] });
     const exp = T.sounding(v).map(s => ({ s, n: T.OPEN[s] + v.frets[s] }));
@@ -927,11 +963,13 @@
     if (rms < 0.002) return { f0: NaN, rms };
     const r = D.yin(frame, sr, 65, 700, 0.15);
     if (!isNum(r.f0) || r.ap > 0.35) return { f0: NaN, rms };
-    const midi = 69 + 12 * Math.log2(r.f0 / a4);
+    // NB : juste après l'attaque, une corde grave sonne quelques cents trop haut (partiels aigus légèrement
+    // inharmoniques) ; la mesure se stabilise en moins d'une seconde — on laisse sonner, l'affichage prend la médiane
+    const f0 = r.f0, midi = 69 + 12 * Math.log2(f0 / a4);
     const open = tuning || T.OPEN;
     let s = 0, bd = Infinity;
     open.forEach((n, i) => { const dd = Math.abs(midi - n); if (dd < bd) { bd = dd; s = i; } });
-    return { f0: r.f0, ap: r.ap, midi, string: s, target: open[s], cents: 100 * (midi - open[s]), noteCents: 100 * (midi - Math.round(midi)), rms };
+    return { f0, ap: r.ap, midi, string: s, target: open[s], cents: 100 * (midi - open[s]), noteCents: 100 * (midi - Math.round(midi)), rms };
   };
   /**
    * Vérification rapide de l'accordage sur un coup à vide (6 cordes) : pour chaque corde, pics de ses

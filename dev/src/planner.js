@@ -97,7 +97,8 @@
     return due;
   };
   P.bilanDue = function (s, week) {
-    if (!s.bilans.length) return 'entree';
+    // bilan d'entrée : pour mesurer ce que la personne sait déjà faire — inutile si elle n'a jamais joué
+    if (!s.bilans.length) return s.profile.start === 'zero' ? null : 'entree';
     const due = P.bilanTarget(s, week);
     if (!due) return null;
     if (due !== week) return 'etape';

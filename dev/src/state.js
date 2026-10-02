@@ -140,7 +140,8 @@
    */
   St.songInfo = function (song) {
     const parsed = T.parseSong(song.text);
-    const tr = song.transpose || 0;
+    // les accords écrits sous « Capo N » sont des formes : le son réel est N demi-tons plus haut
+    const tr = (song.transpose || 0) + (parsed.capo || 0);
     const real = sym => (tr ? T.transposeSym(sym, tr) : sym);
     const seqReal = parsed.seq.map(real);
     if (!seqReal.length) return { ok: false, warnings: parsed.warnings, parsed };
@@ -188,16 +189,21 @@
     const strum = ps ? Math.min(1, ps.best / song.tempo) : 0;
     const cs = s.chant[song.strum];
     const chant = cs ? Math.min(1, cs.best / song.tempo) : 0;
-    const score = 0.4 * changes + 0.2 * chordsScore + 0.25 * strum + 0.15 * chant;
-    const parts = { changes, chords: chordsScore, strum, chant };
+    // sections jouées en entier dans « Ma chanson » : part du tempo réel tenue (rythmique simplifiée : ×0,7)
+    const prog = song.progress || {};
+    const secs = info.sections.map((sx, i) => Math.min(1, prog[i] || 0));
+    const sections = secs.length ? secs.reduce((a, b) => a + b, 0) / secs.length : 0;
+    const score = 0.35 * changes + 0.15 * chordsScore + 0.2 * strum + 0.15 * chant + 0.15 * sections;
+    const parts = { changes, chords: chordsScore, strum, chant, sections };
     // goulot : la partie la plus en retard, avec un conseil concret
     let bottleneck = null;
     const unknown = chords.filter(c => !c.known);
     if (unknown.length) bottleneck = { kind: 'chord', id: unknown[0].id, text: 'Accord à apprendre : ' + T.pretty(T.voicing(unknown[0].id).sym) };
-    else if (ch.length && ch[0].ratio < 0.9) bottleneck = { kind: 'pair', a: ch[0].a, b: ch[0].b, text: 'Changement ' + T.pretty(T.voicing(ch[0].a).sym) + ' → ' + T.pretty(T.voicing(ch[0].b).sym) + ' : ' + ch[0].best + '/min, il en faut ' + ch[0].need };
+    else if (ch.length && ch[0].ratio < 0.9) bottleneck = { kind: 'pair', a: ch[0].a, b: ch[0].b, text: 'Changement ' + T.pretty(T.voicing(ch[0].a).sym) + ' → ' + T.pretty(T.voicing(ch[0].b).sym) + ' : ' + (ch[0].best ? ch[0].best + '/min, il en faut ' + ch[0].need : 'pas encore mesuré (il en faudra ' + ch[0].need + '/min)') };
     else if (strum < 0.9) bottleneck = { kind: 'strum', id: song.strum, text: 'Rythmique « ' + (T.strum(song.strum) || {}).name + ' » à ' + song.tempo + ' BPM (record : ' + (ps ? ps.best : 0) + ')' };
     else if (chant < 0.9) bottleneck = { kind: 'chant', id: song.strum, text: 'Chanter en jouant la rythmique à ' + song.tempo + ' BPM' };
-    return { score: +score.toFixed(3), parts, bottleneck, changes: ch, chords };
+    else if (sections < 0.9) { const i = secs.indexOf(Math.min(...secs)); bottleneck = { kind: 'section', sec: i, text: '« ' + info.sections[i].name + ' » en entier à tempo (record : ' + Math.round(100 * secs[i]) + ' %)' }; }
+    return { score: +score.toFixed(3), parts, bottleneck, changes: ch, chords, sections: secs };
   };
   St.workSong = s => (s.songs || []).find(x => x.id === s.workSong) || null;
 
@@ -208,7 +214,7 @@
     if (song) {
       const info = St.songInfo(song);
       if (info.ok) {
-        songCtx = { id: song.id, title: song.title, tempo: song.tempo, strum: song.strum, bpc: song.bpc, sections: info.sections, diff: info.diff };
+        songCtx = { id: song.id, title: song.title, tempo: song.tempo, strum: song.strum, bpc: song.bpc, sections: info.sections, diff: info.diff, capo: info.capo };
         const rd = St.readiness(s, song, info);
         songPairs = (rd ? rd.changes : []).filter(c => s.vocab.includes(c.a) && s.vocab.includes(c.b)).map(c => [c.a, c.b]);
         songSeq = info.seq.filter((x, i, arr) => i === 0 || x !== arr[i - 1]).slice(0, 4);
@@ -257,6 +263,10 @@
     if (j.pattern) St.patternUpdate(s, 'patterns', j.pattern.id, j.pattern.tempo, j.metrics && j.metrics.mae, ts);
     if (j.pick) St.patternUpdate(s, 'picks', j.pick.id, j.pick.tempo, j.metrics && j.metrics.mae, ts);
     if (j.chant) St.patternUpdate(s, 'chant', j.chant.p, j.chant.tempo, j.metrics && j.metrics.mae, ts);
+    if (j.song && j.song.ok) {
+      const sg = (s.songs || []).find(x => x.id === j.song.id);
+      if (sg) { sg.progress = sg.progress || {}; const eff = +(j.song.ratio * (j.song.mode === sg.strum ? 1 : 0.7)).toFixed(2); sg.progress[j.song.sec] = Math.max(sg.progress[j.song.sec] || 0, eff); }
+    }
     const m = j.metrics || {};
     if (take.ex === 'pulse' && isFinite(m.sd)) St.addSeries(s, 'timingSd', m.sd, ts, 'min');
     if (take.ex === 'minute' && isFinite(m.cpm)) St.addSeries(s, 'cpm', m.cpm, ts, 'max');
