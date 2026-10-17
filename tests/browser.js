@@ -2,10 +2,12 @@
 /*
  * Tests dans un vrai navigateur (Chromium, via Playwright) : node tests/browser.js
  *   (une fois : npm i -D playwright && npx playwright install chromium)
- * 1) Sons de l'app rendus par le vrai moteur Web Audio : notes justes, accords reconnus par l'analyse de l'app,
- *    rythmiques et clics placés au bon instant, pas de saturation.
- * 2) Interface : premier lancement, accueil et plan du jour, onglets, chanson collée, studio, outils, réglages,
- *    puis des séances complètes avec un micro factice (quiz d'oreille, prise au micro, reprise d'une séance).
+ * 1) Sons de l'app rendus par le vrai moteur Web Audio : notes justes, rythmique jouée au bon instant, pas de
+ *    saturation ; tapes de l'écran ramenées sur l'horloge du son.
+ * 2) Interface : premier lancement, passage d'une version 1 à la version 2, accueil et plan du jour, onglets,
+ *    chanson collée, studio, outils (accordeur guidé avec un micro factice), réglages, puis des séances complètes :
+ *    vraies tapes sur l'écran, rythmique tapée puis jouée, corde par corde, chrono, comptage, oreille, cartes,
+ *    composition, filage enregistré, section de chanson, bilan interrompu puis repris, sauvegarde.
  */
 const path = require('path'), fs = require('fs'), http = require('http');
 let chromium;
@@ -39,59 +41,69 @@ function report(name, problems) {
   page.on('pageerror', e => errors.push(String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')));
   page.on('console', m => { if (m.type() === 'error') errors.push('console : ' + m.text()); });
   await page.goto(URL0);
-  await page.waitForFunction(() => window.AC && AC.audio && AC.dsp && AC.ui && AC.ui.state);
+  await page.waitForFunction(() => window.AC && AC.audio && AC.dsp && AC.taps && AC.ui && AC.ui.state);
+
 
   /* ------------------------------------------------------------ 1) sons */
   const snd = await page.evaluate(async () => {
-    const A = AC.audio, D = AC.dsp, T = AC.theory, out = { notes: [], chords: [], rhythm: [], clicks: [], peak: 0 };
-    const tune = (pcm, sr, t) => { const a = Math.round(t * sr); return D.tune(pcm.subarray(a, a + 4096), sr); };
+    const A = AC.audio, D = AC.dsp, out = { notes: [], rhythm: [], peak: 0 };
     for (const m of [40, 45, 50, 55, 59, 64, 69, 76]) {
       const { pcm, sr } = await A.renderOffline({ kind: 'note', midi: m, dur: 1.6 }, 48000, 2);
-      const r = tune(pcm, sr, 0.5);
-      out.notes.push({ m, e: 100 * (r.midi - m) });
+      const a = Math.round(0.5 * sr), r = D.tuneString(pcm.subarray(a, a + 8192), sr, m);
+      out.notes.push({ m, e: r ? r.cents : NaN });
       for (let i = 0; i < pcm.length; i++) out.peak = Math.max(out.peak, Math.abs(pcm[i]));
     }
-    const V = ['C', 'G', 'D', 'Am', 'Em', 'E', 'A', 'F', 'Cadd9', 'G-pop', 'Dsus4', 'Bm'].map(id => T.voicing(id));
-    for (const v of V) {
-      const { pcm, sr } = await A.renderOffline({ kind: 'strum', v: v.id }, 44100, 2.2);
+    for (const id of ['C', 'G', 'D', 'Am', 'Em', 'E', 'F', 'Bm']) {
+      const { pcm } = await A.renderOffline({ kind: 'strum', v: id }, 44100, 2.2);
       for (let i = 0; i < pcm.length; i++) out.peak = Math.max(out.peak, Math.abs(pcm[i]));
-      const x = D.prepare(pcm, sr).x, on = D.onsets(x, {}).list[0], t = on ? on.t : 0.08;
-      // candidats : les autres accords (pas les variantes du même accord, ex. Sol et « Sol pop », jugées équivalentes)
-      const r = D.identify(D.observe(x, (t + 0.04) * 22050, (t + 0.9) * 22050), V.filter(w => w.id === v.id || w.sym !== v.sym));
-      out.chords.push({ id: v.id, best: r.best });
     }
-    // rythmique « Folk » à 90 BPM sur Sol : chaque coup au bon instant
-    const tempo = 90, beat = 60 / tempo;
-    const { pcm, sr } = await A.renderOffline({ kind: 'pattern', strum: 'r3', seq: ['G'], bpc: 4, tempo, bars: 2, withClicks: false }, 44100, 6.5);
+    // rythmique « Folk » à 90 BPM sur Sol, rendue sans clics : chaque coup retrouvé à sa place. Attaques repérées
+    // par l'énergie au-dessus de 2,5 kHz : le bruit du médiator ressort sur les cordes qui sonnent encore.
+    const tempo = 90, beat = 60 / tempo, sr = 44100;
+    const { pcm } = await A.renderOffline({ kind: 'pattern', strum: 'r3', seq: ['G'], bpc: 4, tempo, bars: 2, withClicks: false }, sr, 6.5);
+    const w0 = 2 * Math.PI * 2500 / sr, cs = Math.cos(w0), al = Math.sin(w0) / Math.SQRT2, a0 = 1 + al;
+    const b0 = (1 + cs) / 2 / a0, b1 = -(1 + cs) / a0, b2 = (1 + cs) / 2 / a0, a1 = -2 * cs / a0, a2 = (1 - al) / a0;
+    const hp = new Float32Array(pcm.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < pcm.length; i++) { const v = b0 * pcm[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = pcm[i]; y2 = y1; y1 = v; hp[i] = v; }
+    const hop = 64, env = [];
+    for (let i = 0; i + hop <= hp.length; i += hop) { let e = 0; for (let j = 0; j < hop; j++) e += hp[i + j] * hp[i + j]; env.push(e); }
+    const mx = Math.max(...env), ons = [];
+    for (let k = 6; k < env.length; k++) { let m = 0; for (let j = 1; j <= 6; j++) m += env[k - j]; m /= 6; if (env[k] > 4 * m && env[k] > 0.02 * mx && (!ons.length || k * hop / sr - ons[ons.length - 1] > 0.1)) ons.push(k * hop / sr); }
     const evs = AC.catalog.rhythmScore({ strum: 'r3', seq: ['G'], bpc: 4, tempo, bars: 2 }).events;
-    const ons = D.onsets(D.prepare(pcm, sr).x, {}).list.map(o => o.t);
     const t0 = ons[0];
-    evs.forEach(e => { const exp = t0 + e.beat * beat; const near = ons.reduce((b, o) => (Math.abs(o - exp) < Math.abs(b - exp) ? o : b), Infinity); out.rhythm.push({ k: e.k, e: 1000 * (near - exp) }); });
-    out.extra = ons.length - evs.length;
-    // clics : instants retrouvés par la mesure de latence de l'app (latence nulle hors temps réel)
-    const ck = await A.renderOffline({ kind: 'clicks', tempo: 100, n: 8 }, 48000, 6);
-    const xc = D.prepare(ck.pcm, ck.sr).x, times = []; for (let i = 0; i < 8; i++) times.push(0.08 + i * 0.6);
-    out.lat = D.measureLatency(xc, times);
+    evs.forEach(e => { const exp = t0 + e.beat * beat; const near = ons.reduce((b, o) => (Math.abs(o - exp) < Math.abs(b - exp) ? o : b), Infinity); out.rhythm.push(1000 * (near - exp)); });
+    // une tape de l'écran « maintenant » correspond au son entendu maintenant
+    await A.ensure();
+    out.map = A.perfToCtx(performance.now()) - (A.now() - A.outputLatency());
     return out;
   });
   const P1 = [];
   snd.notes.forEach(n => { if (!(Math.abs(n.e) <= 1.5)) P1.push('note ' + n.m + ' : ' + n.e.toFixed(2) + ' c'); });
-  report('notes de la guitare de l’app justes à ±1,5 cent dans le vrai moteur audio', P1);
-  report('accords grattés par l’app reconnus par l’analyse de l’app (12 accords)', snd.chords.filter(c => c.best !== c.id).map(c => c.id + ' → ' + c.best));
-  // la précision de la programmation est vérifiée par les clics (ci-dessous) ; ici, le contenu du motif : chaque coup
-  // présent, à sa place à l'étalement d'un coup gratté près (~20 ms de la 1re à la dernière corde), aucun en trop
-  const P3 = [], worst = Math.max(...snd.rhythm.map(r => Math.abs(r.e)));
-  if (worst > 25) P3.push('écart max ' + worst.toFixed(1) + ' ms');
-  if (snd.extra) P3.push((snd.extra > 0 ? snd.extra + ' attaque(s) en trop' : -snd.extra + ' coup(s) manquant(s)'));
-  report('rythmique jouée par l’app : tous les coups du motif, chacun à sa place (±25 ms), aucun en trop', P3);
-  // la chaîne de sortie (limiteur suréchantillonné) retarde tout le son de quelques ms : sans effet sur les mesures,
-  // puisque la latence est mesurée sur les clics passés par la même chaîne ; on vérifie un retard faible et constant
-  report('clics du métronome retrouvés dans le son, retard constant (< 5 ms, dispersion ≤ 1 ms)', snd.lat && snd.lat.latency >= 0 && snd.lat.latency <= 0.005 && snd.lat.spread <= 1 && snd.lat.n >= 7 ? [] : ['mesure : ' + JSON.stringify(snd.lat)]);
+  report('notes de la guitare de l’app justes à ±1,5 cent dans le vrai moteur audio (accordeur guidé)', P1);
+  const worst = Math.max(...snd.rhythm.map(Math.abs));
+  report('rythmique jouée par l’app : chaque coup du motif à sa place (±25 ms)', worst <= 25 ? [] : ['écart max ' + worst.toFixed(1) + ' ms']);
   report('pas de saturation (crête < 1)', snd.peak < 1 ? [] : ['crête ' + snd.peak.toFixed(3)]);
+  report('tape de l’écran ramenée sur l’horloge du son (cohérence < 60 ms)', Math.abs(snd.map) < 0.06 ? [] : ['écart ' + (1000 * snd.map).toFixed(0) + ' ms']);
 
   /* ------------------------------------------------------------ 2) interface */
   const click = async (sel, wait) => { if (!(await page.locator(sel).count())) throw new Error('absent : ' + sel); await page.locator(sel).first().click({ timeout: 5000 }); await page.waitForTimeout(wait || 120); };
   const text = async () => page.$eval('body', b => b.innerText);
+  const U0 = [];
+  try {
+    // un état de la version 1 (records venus du micro) : migré, message expliquant le changement
+    await page.evaluate(() => { localStorage.setItem('accord.state.v1', JSON.stringify({ v: 1, created: 1, onboarded: true, profile: { name: 'Test', mic: true, click: 'aigu' }, skills: {}, vocab: ['Em', 'G'], chords: { Em: { intro: '2026-01-01', n: 4, clean: 1, form: 1.1 } }, pairs: { 'Em|G': { n: 2, best: 44 } }, sessions: [{ id: 'a', date: '2026-01-02', takes: [], type: 'M' }], series: { cpm: [['2026-01-02', 44]] }, bilans: [], songs: [], ideas: [] })); });
+    await page.reload(); await page.waitForFunction(() => window.AC && AC.ui && AC.ui.state);
+    if (!/Nouvelle version d’ACCORD/.test(await text())) U0.push('message de la version 2 absent');
+    const st = await page.evaluate(() => { const s = AC.ui.state(); return { v: s.v, pairs: Object.keys(s.pairs).length, click: s.profile.click, vocab: s.vocab.length }; });
+    if (st.v !== 2 || st.pairs || st.click !== 'bois' || st.vocab !== 2) U0.push('migration : ' + JSON.stringify(st));
+    await click('[data-act="notice-ok"]');
+    if (/Nouvelle version d’ACCORD/.test(await text())) U0.push('le message ne se ferme pas');
+    // repartir de zéro : l'app ne doit pas réécrire son état en quittant la page
+    await page.evaluate(() => { AC.store.flush(); AC.store.save = () => {}; AC.store.flush = () => {}; localStorage.clear(); });
+    await page.reload(); await page.waitForFunction(() => window.AC && AC.ui && AC.ui.state);
+  } catch (e) { U0.push(e.message); }
+  report('version 1 → 2 : records du micro remis à zéro, message expliqué puis fermé', U0.concat(errors.splice(0)));
+
   const U1 = [];
   try {
     await click('[data-act="onb"][data-arg="1"]');
@@ -101,10 +113,13 @@ function report(name, problems) {
     await click('[data-act="ck-form"][data-arg="4"]'); await click('[data-act="ck-ok"]');
     if (!/Bilan d’entrée/.test(await text())) U1.push('le premier plan n’est pas le bilan d’entrée');
     for (const t of ['progress', 'songs', 'studio', 'tools', 'home']) { await click(`[data-act="tab"][data-arg="${t}"]`); if ((await text()).length < 200) U1.push('onglet ' + t + ' vide'); }
-    await click('[data-act="nav"][data-arg="settings"]'); await click('[data-act="nav"][data-arg="science"]');
-    if (!/Wilson/.test(await text())) U1.push('sources scientifiques absentes');
+    await click('[data-act="nav"][data-arg="settings"]');
+    if (!/M’enregistrer pour me réécouter/.test(await text())) U1.push('réglage du micro (enregistrement) absent');
+    await click('[data-act="nav"][data-arg="science"]');
+    const t = await text();
+    if (!/Pourquoi l’app ne t’écoute plus/.test(t) || !/Wilson/.test(t) || !/Hewitt/.test(t) || !/Repp/.test(t)) U1.push('page « Comment ça marche » incomplète');
   } catch (e) { U1.push(e.message); }
-  report('premier lancement, plan du jour, onglets, réglages et sources', U1.concat(errors.splice(0)));
+  report('premier lancement, plan du jour, onglets, réglages et explications', U1.concat(errors.splice(0)));
 
   const U2 = [];
   try {
@@ -135,42 +150,58 @@ function report(name, problems) {
     await click('[data-act="tool"][data-arg="dict"]');
     if ((await page.$$('.dict [data-act="dict-play"]')).length < 8) U2.push('dictionnaire vide');
     await click('[data-act="tool-back"]');
+    // accordeur guidé : micro factice ouvert, aiguille, changement de corde, note de référence
     await click('[data-act="tool"][data-arg="tuner"]', 1500);
+    if (!(await page.$('#toolTuner .gauge'))) U2.push('accordeur : pas d’aiguille');
+    await click('[data-act="tt-string"][data-arg="5"]', 600);
+    if (!/Corde 1 · Mi aigu/.test(await text())) U2.push('accordeur : corde choisie non affichée');
+    await click('[data-act="tt-ref"]', 400);
+    if (!/Note de référence…/.test(await text())) U2.push('accordeur : l’aiguille n’attend pas la fin de la note de référence');
     await click('[data-act="tool-back"]');
   } catch (e) { U2.push(e.message); }
-  report('chanson collée (aperçu, capo, transposition), studio, métronome, dictionnaire, accordeur', U2.concat(errors.splice(0)));
+  report('chanson collée (aperçu, capo, transposition), studio, métronome, dictionnaire, accordeur guidé', U2.concat(errors.splice(0)));
 
-  /* --- séances : pilote qui répond à chaque écran */
+  /* --- séances : pilote qui répond à chaque écran (critères cochés, compte saisi, cordes « claires ») */
   async function drive(maxMs, o) {
     o = o || {};
     const t0 = Date.now(), seen = new Set(), used = {};
     while (Date.now() - t0 < maxMs) {
       const st = await page.evaluate(() => {
         const s = document.querySelector('.sess'); if (!s) return null;
-        return { acts: [...s.querySelectorAll('[data-act]')].filter(b => !b.disabled && b.offsetParent).map(b => b.dataset.act), verdict: (s.querySelector('.verdict') || {}).textContent || '', h1: (s.querySelector('h1') || {}).textContent || '' };
+        return { acts: [...s.querySelectorAll('[data-act]')].filter(b => !b.disabled && b.offsetParent).map(b => b.dataset.act), verdict: (s.querySelector('.verdict') || {}).textContent || '', h1: (s.querySelector('h1') || {}).textContent || '', fb: [...s.querySelectorAll('.fb')].map(x => x.textContent).join(' / ') };
       });
       if (!st) return seen;
-      if (st.verdict) seen.add('verdict:' + st.verdict);
+      if (st.verdict) seen.add('verdict:' + st.verdict + ' — ' + st.fb);
       if (st.h1) seen.add(st.h1);
       if (o.quitAt && seen.has(o.quitAt)) { await click('.sess [data-act="sess-quit"]', 60); await click('.sess [data-act="sess-quit"]', 400); o.quitAt = null; continue; }
-      const order = ['audio-wake', 'go', 'show-ok', 'listen-ok', 'wait-ok', 'tune-done', 'guided-next', 'pred', 'q-ans', 'card-ans', 'card-next', 'res-next', 'self', 'cp-add', 'cp-save', 'song-rec', 'crit', 'song-stop', 'song-done', 'retake', 'sess-close'];
+      if (st.acts.includes('chk-ok')) {
+        // critères : tous cochés (ou aucun), puis valider
+        // l'écran est redessiné à chaque critère coché : on relit la liste à chaque fois
+        for (let guard = 0; o.crit !== 'none' && guard < 8 && (await page.locator('.sess .check:not(.on)').count()); guard++) { await page.locator('.sess .check:not(.on)').first().click({ timeout: 4000 }); await page.waitForTimeout(80); }
+        seen.add('crit'); await click('.sess [data-act="chk-ok"]', 200); continue;
+      }
+      if (st.acts.includes('cnt-ok')) { await page.fill('#cntIn', String(o.count || 12)); seen.add('cnt'); await click('.sess [data-act="cnt-ok"]', 200); continue; }
+      const order = ['audio-wake', 'go', 'show-ok', 'listen-ok', 'wait-ok', 'tn-next', 'guided-next', 'pred', 'q-ans', 'ch-ans', 'card-ans', 'card-next', 'str-ans', 'cue-set', 'cue-ok', 'res-next', 'self', 'cp-add', 'cp-save', 'song-rec', 'crit', 'song-stop', 'song-done', 'retake', 'sess-close'];
       const max = Object.assign({ 'cp-add': 3, crit: 3 }, o.max || {});
       const act = order.find(a => st.acts.includes(a) && (used[a] || 0) < (max[a] || Infinity));
       if (act) {
         seen.add(act); used[act] = (used[act] || 0) + 1;
-        // les boutons d'un même écran se ressemblent : on varie l'argument (accords, critères)
-        const sel = '.sess [data-act="' + act + '"]' + (act === 'self' ? '[data-arg="1"]' : '');
+        const arg = { self: '1', 'str-ans': 'ok', 'cue-ok': '1' }[act];
+        const sel = '.sess [data-act="' + act + '"]' + (arg ? '[data-arg="' + arg + '"]' : '');
         const n = await page.locator(sel).count();
-        // localisateur relu au moment du clic : l'écran peut avoir été redessiné entre-temps
         try { await page.locator(sel).nth((used[act] - 1) % Math.max(1, n)).click({ timeout: 4000 }); } catch (e) { used[act]--; }
-        await page.waitForTimeout(act === 'song-rec' ? 3600 : 150);
-      } else await page.waitForTimeout(300);
+        await page.waitForTimeout(act === 'song-rec' ? 3600 : act === 'cue-set' ? 50 : 150);
+      } else await page.waitForTimeout(250);
     }
     return seen;
   }
+  const verdicts = seen => [...seen].filter(x => x.startsWith('verdict:'));
+  /** Séance d'un exercice avec des paramètres choisis (comme « Exercices au choix », mais réglée pour le test). */
+  const runPlan = items => page.evaluate(its => { AC.ui.startSession({ type: 'libre', title: 'Test', minutes: 5, block: 1, items: its, targetP: 0.8, notes: [], reasons: [] }); }, items);
+
   const U3 = [];
   try {
-    // exercice d'oreille seul (pas de micro) : bibliothèque → « Majeur ou mineur ? »
+    // exercice d'oreille seul : bibliothèque → « Majeur ou mineur ? »
     await click('[data-act="tab"][data-arg="tools"]'); await click('[data-act="tool"][data-arg="lib"]');
     await click('[data-act="lib-start"][data-arg="qualite"]', 600);
     const seen = await drive(120000);
@@ -182,65 +213,109 @@ function report(name, problems) {
 
   const U4 = [];
   try {
-    // prise au micro (micro factice de Chromium) : « Rythmique », jusqu'au verdict
-    await click('[data-act="tab"][data-arg="tools"]'); await click('[data-act="tool"][data-arg="lib"]');
-    await click('[data-act="lib-start"][data-arg="rythme"]', 800);
-    const seen = await drive(180000);
-    if (![...seen].some(x => x.startsWith('verdict:'))) U4.push('aucun verdict après la prise : ' + [...seen].join(', '));
-    const s = await page.evaluate(() => ({ n: AC.ui.state().sessions.length, lat: AC.ui.state().profile.latency }));
-    if (s.n < 2) U4.push('séance non enregistrée');
+    // pulsation avec de VRAIES tapes : des appuis envoyés sur la zone de l'écran, calés sur les clics entendus
+    await page.evaluate(() => {
+      AC.ui.tapPadTest = events => {
+        const A = AC.audio;
+        events.forEach(e => {
+          const ms = (e.t - A.now()) * 1000 + 30 + 8 * (Math.random() - 0.5);
+          setTimeout(() => { const pad = document.getElementById('tapPad'); if (pad) pad.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true })); }, Math.max(0, ms));
+        });
+      };
+    });
+    await runPlan([{ ex: 'pulse', fixed: [{ tempo: 100, sub: 1, silent: 1, tol: 70 }, { tempo: 92, sub: 2, silent: 2, tol: 70 }], comp: 'pulsation' }]);
+    const seen = await drive(90000);
+    const v = verdicts(seen);
+    if (v.length !== 2 || !v.every(x => /^verdict:Réussi/.test(x) && /tempo tenu/.test(x))) U4.push('pulsation : ' + v.join(' | '));
+    const s = await page.evaluate(() => { const st = AC.ui.state(); return { off: st.profile.tapOffset, sd: st.series.tapSd, it: st.items.pulse }; });
+    if (!Number.isFinite(s.off) || !s.sd || !s.sd.length || !s.it || s.it.n !== 2) U4.push('mesures non enregistrées : ' + JSON.stringify(s));
+    await page.evaluate(() => { AC.ui.tapPadTest = null; });
   } catch (e) { U4.push(e.message); }
-  report('prise au micro (rythmique) : enregistrement, analyse, verdict, retour', U4.concat(errors.splice(0)));
+  report('pulsation avec de vraies tapes sur l’écran : réussie, tempo tenu sans le clic, délai et régularité enregistrés', U4.concat(errors.splice(0)));
 
-  // ateliers sans prise rythmée : cartes, composition (grille gardée), filage enregistré, section de la chanson
-  for (const [ex, want, label] of [['cartes', 'card-ans', 'cartes de théorie'], ['compo', 'cp-save', 'atelier de composition (idée gardée)'], ['filage', 'song-done', 'filage enregistré puis noté'], ['chanson', 'res-next', 'section de ma chanson au micro']]) {
+  const U5 = [];
+  try {
+    // rythmique : motif tapé (tapes injectées : un tapeur qui oublie un coup sur quatre), puis joué avec le clic,
+    // enregistré par le micro factice, réécouté et noté avec les critères
+    await page.evaluate(() => { AC.ui.tapPadTest = (events, taps) => events.forEach((e, i) => { if (i % 4 !== 3) taps.push(e.t + 0.05); }); });
+    await runPlan([{ ex: 'rythme', fixed: [{ p: 'r3', tempo: 96, seq: ['Em'], tol: 45 }], comp: 'rythmiques' }]);
+    const seen = await drive(90000);
+    const v = verdicts(seen).join(' | ');
+    if (!/Motif tapé : presque/.test(v) || !/6\/24 coups sans tape/.test(v) || !/À la guitare : 3\/3 critères/.test(v) || !seen.has('crit')) U5.push('rythmique : ' + v);
+    const parts = await page.evaluate(() => { const s = AC.ui.state(); const x = s.sessions[s.sessions.length - 1]; return x.takes[0] && x.takes[0].m; });
+    if (!parts || parts.hit == null || parts.crit !== '3/3') U5.push('mesures de la prise : ' + JSON.stringify(parts));
+    await page.evaluate(() => { AC.ui.tapPadTest = null; });
+  } catch (e) { U5.push(e.message); }
+  report('rythmique : tapée (coups oubliés repérés), puis jouée avec le clic, enregistrée et notée par critères', U5.concat(errors.splice(0)));
+
+  const U6 = [];
+  try {
+    await runPlan([{ ex: 'propre', fixed: [{ v: 'C' }], comp: 'accords' }, { ex: 'forme', fixed: [{ chords: ['Em', 'C', 'G', 'D'], limit: 3 }], comp: 'accords' }, { ex: 'minute', fixed: [{ a: 'Em', b: 'C', sec: 12, target: 40 }], comp: 'changements' }, { ex: 'releve', fixed: [{ key: 7, chords: ['G', 'C', 'G'], set: ['G', 'C'] }], comp: 'oreille' }]);
+    const seen = await drive(150000, { count: 9 });
+    const v = verdicts(seen).join(' | ');
+    if (!/Les 5 cordes sonnent/.test(v)) U6.push('corde par corde : ' + v);
+    if (!/4\/4 accords posés à temps et propres/.test(v)) U6.push('chrono : ' + v);
+    if (!/9 changements en 12 s, soit 45\/min/.test(v)) U6.push('une minute : ' + v);
+    if (!/1\. G/.test(v)) U6.push('accord retrouvé : ' + v);
+    const st = await page.evaluate(() => { const s = AC.ui.state(); return { c: s.chords.C, em: s.chords.Em, pair: s.pairs['C|Em'] || s.pairs['Em|C'] }; });
+    if (!st.c || st.c.clean !== 1 || !st.c.strings || !st.em || !(st.em.form > 0) || !st.pair || st.pair.best !== 45) U6.push('enregistré : ' + JSON.stringify(st));
+  } catch (e) { U6.push(e.message); }
+  report('corde par corde, accords au chrono, changements comptés, accord retrouvé à l’oreille : verdicts et records', U6.concat(errors.splice(0)));
+
+  // ateliers : cartes, composition (grille gardée), filage enregistré, section de la chanson (enregistrée et réécoutable)
+  for (const [ex, want, label] of [['cartes', 'card-ans', 'cartes de théorie'], ['compo', 'cp-save', 'atelier de composition (idée gardée)'], ['filage', 'song-done', 'filage enregistré puis noté'], ['chanson', 'crit', 'section de ma chanson jouée avec le clic, enregistrée, notée']]) {
     const UX = [];
     try {
       const n0 = await page.evaluate(() => ({ s: AC.ui.state().sessions.length, i: AC.ui.state().ideas.length }));
       await click('[data-act="tab"][data-arg="tools"]'); await click('[data-act="tool"][data-arg="lib"]');
       await click('[data-act="lib-start"][data-arg="' + ex + '"]', 800);
-      const seen = await drive(200000);
+      const seen = await drive(240000);
       if (!seen.has(want)) UX.push('étape « ' + want + ' » jamais atteinte : ' + [...seen].join(', '));
       const n1 = await page.evaluate(() => ({ s: AC.ui.state().sessions.length, i: AC.ui.state().ideas.length }));
       if (n1.s <= n0.s) UX.push('séance non enregistrée');
       if (ex === 'compo' && n1.i <= n0.i) UX.push('idée non gardée');
+      if (ex === 'chanson') {
+        const recs = await page.evaluate(async () => (await AC.store.listRecs(r => r.kind === 'song')).length);
+        if (recs < 2) UX.push('prises de la chanson non enregistrées (' + recs + ')');
+      }
     } catch (e) { UX.push(e.message); }
     report(label, UX.concat(errors.splice(0)));
   }
 
-  const U5 = [];
+  const U7 = [];
   try {
-    // bilan d'entrée interrompu après l'accordage, puis repris depuis l'accueil
+    // bilan d'entrée : accordage guidé (corde par corde), puis interrompu et repris depuis l'accueil
     await click('[data-act="tab"][data-arg="home"]');
     await click('[data-act="start"]', 800);
-    await drive(15000, { quitAt: 'go' });
+    await drive(30000, { quitAt: 'go', max: { 'tn-next': 6 } });
+    const tuned = await page.evaluate(() => { const s = AC.ui.state(); return s.current && s.current.sess.takes.some(t => t.ex === 'accordage'); });
     await page.waitForTimeout(300);
-    const st = await page.evaluate(() => { const s = AC.ui.state(); return { cur: !!s.current, partial: s.sessions.filter(x => x.partial).length }; });
-    if (!st.cur) U5.push('séance non reprenable');
-    if (!/Séance en cours/.test(await text())) U5.push('pas de bouton « Reprendre » à l’accueil');
+    const st = await page.evaluate(() => { const s = AC.ui.state(); return { cur: !!s.current }; });
+    if (!st.cur) U7.push('séance non reprenable');
+    if (!tuned) U7.push('accordage non fait');
+    if (!/Séance en cours/.test(await text())) U7.push('pas de bouton « Reprendre » à l’accueil');
     await click('[data-act="resume"]', 600);
-    if (!(await page.$('.sess'))) U5.push('la reprise n’ouvre pas la séance');
+    if (!(await page.$('.sess'))) U7.push('la reprise n’ouvre pas la séance');
     await click('.sess [data-act="sess-quit"]', 60); await click('.sess [data-act="sess-quit"]', 500);
     await drive(5000);
-  } catch (e) { U5.push(e.message); }
-  report('séance interrompue puis reprise depuis l’accueil', U5.concat(errors.splice(0)));
+  } catch (e) { U7.push(e.message); }
+  report('bilan : accordage guidé corde par corde, interrompu puis repris depuis l’accueil', U7.concat(errors.splice(0)));
 
-  const U6 = [];
+  const U8 = [];
   try {
     // export : un fichier JSON téléchargé, réimportable
     await click('[data-act="tab"][data-arg="home"]'); await click('[data-act="nav"][data-arg="settings"]');
     const [dl] = await Promise.all([page.waitForEvent('download'), click('[data-act="export"]')]);
     const p = await dl.path(), j = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (j.app !== 'ACCORD' || !j.state || !j.state.songs.length) U6.push('fichier exporté incomplet');
+    if (j.app !== 'ACCORD' || !j.state || !j.state.songs.length || j.state.v !== 2) U8.push('fichier exporté incomplet');
     await page.setInputFiles('[data-change="import-file"]', p);
     await page.waitForTimeout(500);
-    if (!/Sauvegarde importée/.test(await text())) U6.push('import non confirmé');
-    // thème clair/sombre
+    if (!/Sauvegarde importée/.test(await text())) U8.push('import non confirmé');
     await click('[data-act="nav"][data-arg="settings"]');
     await page.selectOption('[data-change="pf-theme"]', 'dark');
-    if ((await page.evaluate(() => document.documentElement.getAttribute('data-theme'))) !== 'dark') U6.push('thème sombre non appliqué');
-  } catch (e) { U6.push(e.message); }
-  report('sauvegarde exportée puis réimportée, thème', U6.concat(errors.splice(0)));
+    if ((await page.evaluate(() => document.documentElement.getAttribute('data-theme'))) !== 'dark') U8.push('thème sombre non appliqué');
+  } catch (e) { U8.push(e.message); }
+  report('sauvegarde exportée puis réimportée, thème', U8.concat(errors.splice(0)));
 
   await browser.close(); srv.close();
   console.log('\n' + (count - fails) + '/' + count + ' tests réussis');
