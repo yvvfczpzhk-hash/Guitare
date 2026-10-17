@@ -1,10 +1,11 @@
 'use strict';
 /*
- * Guitare de synthèse réaliste pour les tests (indépendante du moteur de l'app) :
- * cordes à partiels inharmoniques (synthèse modale), position du médiator, amortissement par fréquence,
- * bruit d'attaque, résonances de caisse, coups vers le bas/haut étalés dans le temps, cordes étouffées,
- * mauvaises cases, frisures, frappes percussives (« chuck »), micro de téléphone (graves coupés),
- * réverbération de pièce, bruit de fond, clics du métronome entendus par le micro, voix chantée.
+ * Simulations pour les tests (indépendantes de l'app) :
+ * — une guitare de synthèse réaliste pour l'accordeur : cordes à partiels inharmoniques (synthèse modale),
+ *   position du médiator, amortissement par fréquence, résonances de caisse, réverbération de pièce, micro de
+ *   téléphone (graves coupés), bruit de fond ;
+ * — un « tapeur » humain pour les tapes : délai fixe du téléphone, irrégularité, dérive quand le clic se tait,
+ *   coups oubliés, tapes en trop, « haut » pressés.
  */
 const FS = 44100;
 const OPEN = [40, 45, 50, 55, 59, 64];
@@ -61,75 +62,6 @@ function addString(y, o) {
   }
 }
 
-/** Frappe étouffée : bruit large bande très bref + choc grave + cordes étouffées. */
-function addChuck(y, t, amp, seed) {
-  const r = rng(seed || 3), a0 = Math.floor(t * FS), n = Math.floor(0.09 * FS);
-  let lp = 0;
-  for (let i = 0; i < n && a0 + i < y.length; i++) {
-    const env = Math.exp(-i / (0.011 * FS));
-    lp += 0.35 * ((r() * 2 - 1) - lp);
-    y[a0 + i] += amp * 0.9 * env * lp + amp * 0.5 * Math.exp(-i / (0.025 * FS)) * Math.sin(2 * Math.PI * 95 * i / FS);
-  }
-  for (let s = 0; s < 6; s++) addString(y, { t: t + s * 0.002, midi: OPEN[s] + 2, amp: amp * 0.25, muted: true, seed: seed * 11 + s });
-}
-
-/**
- * Coup sur un accord. o : {t, frets (corde 6 → 1), dir 'D'|'U', spread (s), amp, muted:[cordes], wrong:{s: +n}, buzz:{s: niveau},
- * strings (cordes touchées), seed, a4, cents:{s: écart}}
- */
-function addStrum(y, o) {
-  const r = rng(o.seed || 1);
-  let strings = [];
-  for (let s = 0; s < 6; s++) if (o.frets[s] >= 0) strings.push(s);
-  if (o.strings) strings = strings.filter(s => o.strings.includes(s));
-  else if (o.dir === 'U') strings = strings.filter(s => s >= 2);       // en montant, on évite souvent les basses
-  if (o.dir === 'U') strings.reverse();
-  const spread = o.spread != null ? o.spread : 0.012 + 0.02 * r();
-  strings.forEach((s, k) => {
-    const t = o.t + (strings.length > 1 ? k * spread / (strings.length - 1) : 0) + (r() - 0.5) * 0.0015;
-    const midi = OPEN[s] + o.frets[s] + ((o.wrong && o.wrong[s]) || 0);
-    const amp = (o.amp || 0.18) * (o.dir === 'U' ? 0.8 : 1) * (0.8 + 0.4 * r()) * (s < 2 ? 1.1 : 1);
-    addString(y, { t, midi, amp, muted: o.muted && o.muted.includes(s), buzz: o.buzz && o.buzz[s], seed: (o.seed || 1) * 31 + s, a4: o.a4, cents: o.cents && o.cents[s], end: o.ends ? o.ends[s] : o.end, dur: o.dur });
-  });
-}
-
-/** Clic du métronome tel que le micro l'entend (bruit bref, bande 7–10 kHz). */
-function addClick(y, t, amp, seed) {
-  // bruit bande 6,5–10 kHz (somme de sinusoïdes à phases aléatoires), décroissance rapide, + un peu de
-  // distorsion du haut-parleur (quelques % d'énergie plus grave)
-  const r = rng(seed || 5), a0 = Math.floor(t * FS), n = Math.floor(0.012 * FS);
-  const comps = []; for (let k = 0; k < 40; k++) comps.push({ f: 6500 + 3500 * r(), ph: r() * 6.28 });
-  for (let i = 0; i < n && a0 + i < y.length; i++) {
-    let v = 0; for (const c of comps) v += Math.sin(c.ph + 2 * Math.PI * c.f * i / FS);
-    const env = Math.exp(-i / (0.0022 * FS));
-    y[a0 + i] += amp * env * (v / 6.3 + 0.08 * Math.sin(2 * Math.PI * 1800 * i / FS));
-  }
-}
-
-/** Voix chantée simple (source harmonique + formants approximatifs). notes : [{t0, t1, midi}] */
-function addVoice(y, notes, amp, seed) {
-  const r = rng(seed || 9);
-  const F = [[700, 110], [1150, 130], [2500, 180]];
-  for (const nt of notes) {
-    const a0 = Math.floor(nt.t0 * FS), a1 = Math.min(y.length, Math.floor(nt.t1 * FS));
-    const f0 = midiToHz(nt.midi);
-    const H = Math.floor(5000 / f0);
-    const amps = [];
-    for (let h = 1; h <= H; h++) { const f = h * f0; let g = 0; for (const [fc, bw] of F) g += 1 / (1 + Math.pow((f - fc) / bw, 2)); amps.push((0.15 + g) / h); }
-    let norm = 0; for (const a of amps) norm += a * a; norm = Math.sqrt(norm);
-    const ph = amps.map(() => r() * 6.28);
-    let phase = 0;
-    for (let i = a0; i < a1; i++) {
-      const tt = (i - a0) / FS, env = Math.min(1, tt / 0.04, (a1 - i) / FS / 0.05);
-      const vib = 1 + 0.004 * Math.sin(2 * Math.PI * 5.2 * tt);          // vibrato léger (±7 cents)
-      phase += 2 * Math.PI * f0 * vib / FS;
-      let v = 0;
-      for (let h = 0; h < amps.length; h++) v += amps[h] * Math.sin(ph[h] + (h + 1) * phase);
-      y[i] += amp * env * v / norm + amp * 0.02 * (r() * 2 - 1);
-    }
-  }
-}
-
 /** Pièce et micro : résonances de caisse, réverbération (peignes de Schroeder), micro de téléphone, bruit. */
 function room(y, o) {
   o = o || {};
@@ -180,31 +112,27 @@ function room(y, o) {
   return out;
 }
 
+
 /**
- * Joueur humain sur une grille : coups attendus [{beat, k, frets}] à `tempo`, à partir de t0 (s).
- * human : {sd (s), bias (s), drift (s/s), seed, spread}
- * Renvoie {y (brut avant pièce), times (instants réels du début de chaque coup)}
+ * Tapeur humain : instants des tapes (s) pour des coups attendus [{t, k, free}].
+ * o : {offset (s, délai fixe du téléphone), sd (s), seed, drift (fraction du tempo gagnée par seconde de silence :
+ * 0,04 → accélère de 4 %), skip(e, i), extra: [instants], upBias (s, décalage des coups « haut »)}
  */
-function playGrid(y, events, tempo, t0, human, chordAt) {
-  human = human || {};
-  const r = rng(human.seed || 21), beat = 60 / tempo;
-  const times = [];
-  events.forEach(e => {
-    const tg = t0 + e.beat * beat;
-    let t = tg + (human.bias || 0) + (human.sd || 0) * gauss(r) + (human.drift || 0) * (tg - t0);
-    if (e.late) t += e.late;
-    times.push(t);
-  });
-  // cordes touchées par chaque coup (un coup vers le haut épargne les cordes 6 et 5 ; une frappe étouffe tout)
-  const touched = events.map(e => (e.k === 'X' ? [0, 1, 2, 3, 4, 5] : e.k === 'U' ? [2, 3, 4, 5] : [0, 1, 2, 3, 4, 5]));
+function tapper(events, o) {
+  o = o || {};
+  const r = rng(o.seed || 5), out = [];
+  let lag = 0, prevFree = false, tFree0 = 0;
   events.forEach((e, i) => {
-    const t = times[i];
-    const frets = e.frets || (chordAt ? chordAt(e) : [0, 2, 2, 0, 0, 0]);
-    const ends = [0, 1, 2, 3, 4, 5].map(s => { for (let j = i + 1; j < events.length; j++) if (touched[j].includes(s)) return times[j]; return null; });
-    if (e.k === 'X') addChuck(y, t, human.amp || 0.18, 100 + i);
-    else addStrum(y, { t, frets, dir: e.k === 'U' ? 'U' : 'D', amp: (human.amp || 0.18) * (e.acc ? 1.25 : 1), seed: 300 + i * 7 + (human.seed || 0), spread: human.spread, muted: e.muted, wrong: e.wrong, ends });
+    if (e.free && !prevFree) { tFree0 = e.t; }
+    if (e.free) lag = -(o.drift || 0) * (e.t - tFree0);           // en avance de plus en plus s'il accélère
+    else if (prevFree) lag *= 0.5;                                 // le clic revient : il se recale peu à peu
+    else lag *= 0.5;
+    prevFree = e.free;
+    if (o.skip && o.skip(e, i)) return;
+    out.push(e.t + (o.offset || 0) + lag + (e.k === 'U' ? o.upBias || 0 : 0) + (o.sd || 0) * gauss(r));
   });
-  return times;
+  (o.extra || []).forEach(t => out.push(t + (o.offset || 0)));
+  return out.sort((a, b) => a - b);
 }
 
-module.exports = { FS, OPEN, rng, gauss, midiToHz, addString, addStrum, addChuck, addClick, addVoice, room, playGrid };
+module.exports = { FS, OPEN, rng, gauss, midiToHz, addString, room, tapper };

@@ -1,19 +1,19 @@
 'use strict';
 /*
  * Tests automatiques d'ACCORD (sans navigateur, sans dépendance) : node tests/run.js
- * Ils vérifient la théorie (accords, grilles collées, tonalité, capo), le moteur d'analyse sur des guitares de
- * synthèse réalistes (attaques, latence, rythmiques, frappes, pulsation, accords, diagnostic, changements,
- * corde par corde, accordeurs, temps de réaction, voix), la guitare de synthèse de l'app, les exercices,
- * les cartes (FSRS), l'état (prête à jouer, sauvegarde) et le programme de 16 semaines sur un élève simulé.
+ * Ils vérifient la théorie (accords, grilles collées, tonalité, capo), l'analyse des tapes sur des tapeurs
+ * simulés (délai du téléphone, régularité, coups manqués ou en trop, dérive quand le clic se tait, doubles
+ * croches), l'accordeur guidé sur une guitare de synthèse réaliste passée par un micro de téléphone, la guitare
+ * de l'app, les exercices et leurs jugements (poids des mesures), les cartes (FSRS), l'état (prête à jouer,
+ * sauvegarde, passage de la version 1 à la version 2) et le programme de 16 semaines sur un élève simulé.
  */
 const { loadAccord } = require('./load.js');
 const S = require('./synth.js');
 const AC = loadAccord();
-const T = AC.theory, D = AC.dsp, G = AC.gsynth, M = AC.model, R = AC.srs, C = AC.catalog, St = AC.state, P = AC.planner;
-const FS = 22050;                      // fréquence d'analyse de l'app
+const T = AC.theory, D = AC.dsp, K = AC.taps, G = AC.gsynth, M = AC.model, R = AC.srs, C = AC.catalog, St = AC.state, P = AC.planner;
 
 let fails = 0, count = 0;
-const only = (process.argv[2] || '').toLowerCase();      // node tests/run.js capo : seulement les tests dont le nom contient « capo »
+const only = (process.argv[2] || '').toLowerCase();      // node tests/run.js tapes : seulement les tests dont le nom contient « tapes »
 function test(name, fn) {
   if (only && !name.toLowerCase().includes(only)) return;
   const t0 = Date.now();
@@ -87,327 +87,146 @@ test('enchaînements : changements avec doigt pivot moins coûteux, barrés plus
   ok(T.voicing('F').d > T.voicing('Em').d && T.voicing('Bm').d > T.voicing('Am').d, 'barrés plus difficiles');
 });
 
-/* ================================================================== analyse : prises rythmées */
-/**
- * Prise rythmée telle que le micro l'enregistre : décompte et clics entendus après la latence aller-retour `lat`,
- * joueur calé sur ce qu'il entend. o : {lat, sd, bias, seed, frets(e), skip(e,i), extra:[temps], late(e,i),
- * voice:[[temps0, temps1, midi]], snr, amp, clickAmp}
- */
-function rhythmTake(sc, o) {
+/* ================================================================== tapes */
+/** Coups attendus d'une partition jouée à partir de 1 s (comme l'app : décompte d'une mesure avant). */
+function expectedOf(sc) { const beat = 60 / sc.tempo; return K.expected(sc, 1 + sc.countIn * beat); }
+function analyzeTaps(sc, o) {
+  const ex = expectedOf(sc), taps = S.tapper(ex.events, o);
+  return K.analyze(taps, ex.events, { slot: ex.slot, beat: ex.beat, prior: o && o.prior });
+}
+const pulseScore = (tempo, sub, silent) => { const bars = 2 + silent + 1, clickBars = []; for (let b = 0; b < bars; b++) clickBars.push(b < 2 || b === bars - 1); return C.rhythmScore({ seq: ['Em'], tempo, bars, sub, clickBars }); };
+
+test('tapes : délai du téléphone retrouvé (Bluetooth compris), régularité mesurée, rien de manqué ni en trop (48 tapeurs, 60–130 BPM)', () => {
+  const offErr = [], sdRatio = [];
+  let n = 0;
+  // en croches, un délai plus long qu'une croche serait ambigu la toute première fois : l'app l'apprend d'abord en
+  // noires (bilan, premières séances) et s'en sert ensuite comme point de départ
+  const learned = {};
+  for (const tempo of [60, 84, 104, 130]) for (const sub of [1, 2]) for (const [offset, sd] of [[-0.03, 0.008], [0.05, 0.015], [0.12, 0.025], [0.25, 0.012], [0.04, 0.04], [0.18, 0.02]]) {
+    const sc = pulseScore(tempo, sub, 0), seed = ++n, ex = expectedOf(sc), taps = S.tapper(ex.events, { offset, sd, seed });
+    const res = K.analyze(taps, ex.events, { slot: ex.slot, beat: ex.beat, prior: sub === 2 ? learned[offset] : undefined });
+    if (sub === 1) learned[offset] = res.offset;
+    // dispersion réelle de ces tapes-là (le tirage de 12 à 24 tapes s'écarte de l'écart-type nominal)
+    const dev = taps.map((t, i) => 1000 * (t - ex.events[i].t)), m = dev.reduce((x, y) => x + y, 0) / dev.length;
+    const trueSd = Math.sqrt(dev.reduce((x, y) => x + (y - m) * (y - m), 0) / (dev.length - 1));
+    // un tapeur très irrégulier (±40 ms) peut faire une tape aberrante : elle compte alors comme manquée
+    ok(sd < 0.03 ? res.hitRate === 1 && !res.extras.length : res.hitRate >= 0.9 && res.extras.length <= 1, tempo + ' BPM, délai ' + offset + ' s, ±' + 1000 * sd + ' ms : ' + res.hits + '/' + res.n + ', ' + res.extras.length + ' en trop');
+    offErr.push(Math.abs(res.offset - offset) * 1000);
+    sdRatio.push(res.sd / trueSd);
+  }
+  const med = a => K.median(a);
+  ok(med(offErr) <= 5 && Math.max(...offErr) <= 20, 'délai : erreur médiane ' + med(offErr).toFixed(1) + ' ms, max ' + Math.max(...offErr).toFixed(1));
+  // une tape aberrante écartée ne peut que réduire la dispersion mesurée
+  ok(med(sdRatio) > 0.99 && Math.min(...sdRatio) > 0.8 && Math.max(...sdRatio) < 1.01, 'régularité mesurée / réelle : médiane ' + med(sdRatio).toFixed(3) + ' [' + Math.min(...sdRatio).toFixed(3) + ' – ' + Math.max(...sdRatio).toFixed(3) + ']');
+});
+
+test('tapes : coups oubliés et tapes en trop repérés, y compris sur les silences du motif ; retour qui les nomme', () => {
+  for (const [p, tempo] of [['r3', 84], ['r4', 92], ['r9', 88], ['r6', 72]]) {
+    const pat = T.strum(p), sc = C.rhythmScore({ strum: p, seq: ['Em'], bpc: 4, tempo, bars: 4 }), ex = expectedOf(sc), beat = 60 / tempo;
+    const start = ex.events[0].t - ex.events[0].b * beat;
+    // deux tapes sur des cases « silence » de la 2ᵉ mesure, et trois coups oubliés
+    const rests = []; for (let i = 0; i < pat.slots.length; i++) if (pat.slots[i] === '.') rests.push(start + (pat.sig + i / pat.sub) * beat);
+    const taps = S.tapper(ex.events, { offset: 0.07, sd: 0.012, seed: 3, skip: (e, i) => i === 2 || i === 7 || i === 11, extra: rests.slice(0, 2) });
+    const res = K.analyze(taps, ex.events, { slot: ex.slot, beat: ex.beat });
+    ok(res.hits === res.n - 3 && res.extras.length === 2, p + ' : ' + res.hits + '/' + res.n + ' trouvés, ' + res.extras.length + ' en trop');
+    const j = C.EX.rythme.judge({ taps: res }, { p, tempo, seq: ['Em'], tol: 45 }, null);
+    ok(j.y < 1 && j.fb.some(f => /3\/\d+ coups sans tape/.test(f.text)) && j.fb.some(f => /2 tapes en trop — dont 2 sur une case « silence »/.test(f.text)), p + ' : ' + j.fb.map(f => f.text).join(' / '));
+  }
+  // motif bien tapé : réussi, sans fausse alarme
+  const sc = C.rhythmScore({ strum: 'r4', seq: ['Em'], bpc: 4, tempo: 90, bars: 4 }), good = analyzeTaps(sc, { offset: 0.09, sd: 0.012, seed: 9 });
+  const j = C.EX.rythme.judge({ taps: good }, { p: 'r4', tempo: 90, seq: ['Em'], tol: 35, tapOnly: true }, null);
+  ok(j.y === 1 && j.fb.some(f => /Tous les coups au bon endroit/.test(f.text)) && j.pattern && j.pattern.tempo === 90, 'bien tapé : ' + j.y + ' ' + j.fb.map(f => f.text).join(' / '));
+});
+
+test('tapes : dérive sans le clic mesurée (accélère de 4 % → 4 ± 1 %, ralentit de 3 %) ; tempo tenu → « tempo tenu »', () => {
+  for (const tempo of [72, 96, 120]) {
+    const sc = pulseScore(tempo, 1, 2);
+    const steady = analyzeTaps(sc, { offset: 0.06, sd: 0.012, seed: tempo });
+    ok(steady.drift && Math.abs(steady.drift.tempoPct) < 1.5 && steady.drift.pctSe < 1, tempo + ' BPM, tenu : ' + (steady.drift && steady.drift.tempoPct.toFixed(2) + ' ± ' + steady.drift.pctSe.toFixed(2)) + ' %');
+    const js = C.EX.pulse.judge({ taps: steady }, { tempo, sub: 1, silent: 2, tol: 35 });
+    ok(js.y === 1 && js.fb.some(f => /tempo tenu/.test(f.text)) && js.observe && js.observe.comp === 'pulsation', tempo + ' BPM tenu : ' + js.fb.map(f => f.text).join(' / '));
+    const fast = analyzeTaps(sc, { offset: 0.06, sd: 0.012, seed: tempo + 1, drift: 0.04 / 1.04 });
+    ok(fast.drift && near(fast.drift.tempoPct, 4, 1) && fast.drift.endErr < -40, tempo + ' BPM, accélère : ' + fast.drift.tempoPct.toFixed(2) + ' %, retour du clic ' + fast.drift.endErr.toFixed(0) + ' ms');
+    const jf = C.EX.pulse.judge({ taps: fast }, { tempo, sub: 1, silent: 2, tol: 35 });
+    ok(jf.y < 1 && jf.fb.some(f => /tu accélères de [34],\d %/.test(f.text)), tempo + ' BPM accélère : ' + jf.fb.map(f => f.text).join(' / '));
+    const slow = analyzeTaps(sc, { offset: 0.06, sd: 0.012, seed: tempo + 2, drift: -0.03 / 0.97 });
+    ok(slow.drift && near(slow.drift.tempoPct, -3, 1) && slow.drift.endErr > 30, tempo + ' BPM, ralentit : ' + slow.drift.tempoPct.toFixed(2) + ' %');
+  }
+});
+
+test('tapes : doubles croches à 65–90 BPM sans erreur d’appariement ; « haut » pressés repérés', () => {
+  for (const [p, tempo] of [['r11', 65], ['r12', 76], ['r13', 70], ['r14', 90]]) {
+    const sc = C.rhythmScore({ strum: p, seq: ['Em'], bpc: 4, tempo, bars: 4 });
+    const res = analyzeTaps(sc, { offset: 0.08, sd: 0.012, seed: tempo });
+    ok(res.hitRate === 1 && !res.extras.length && res.mae < 15, p + ' à ' + tempo + ' : ' + res.hits + '/' + res.n + ', ' + res.extras.length + ' en trop, ±' + res.mae.toFixed(1) + ' ms');
+  }
+  const sc = C.rhythmScore({ strum: 'r2', seq: ['Em'], bpc: 4, tempo: 80, bars: 4 });
+  const res = analyzeTaps(sc, { offset: 0.08, sd: 0.01, seed: 4, upBias: -0.05 });
+  const j = C.EX.rythme.judge({ taps: res }, { p: 'r2', tempo: 80, seq: ['Em'], tol: 45, tapOnly: true }, null);
+  ok(j.fb.some(f => /« haut » \(↑\) arrivent \d+ ms trop tôt/.test(f.text)), '« haut » pressés : ' + j.fb.map(f => f.text).join(' / '));
+});
+
+test('tapes : rien tapé → pas de verdict inventé ; délai déjà connu du téléphone utilisé comme point de départ', () => {
+  const sc = pulseScore(80, 1, 1), ex = expectedOf(sc);
+  const none = K.analyze([], ex.events, { slot: ex.slot, beat: ex.beat });
+  const j = C.EX.pulse.judge({ taps: none }, { tempo: 80, sub: 1, silent: 1, tol: 45 });
+  ok(j.y == null && /aucune tape/.test(j.fb[0].text), 'sans tape : ' + JSON.stringify(j));
+  // croches rapides avec un délai de 210 ms : sans a priori, ambigu ; avec le délai mesuré la fois d'avant, retrouvé
+  const sc2 = pulseScore(126, 2, 0), ex2 = expectedOf(sc2), taps = S.tapper(ex2.events, { offset: 0.21, sd: 0.01, seed: 2 });
+  const withPrior = K.analyze(taps, ex2.events, { slot: ex2.slot, beat: ex2.beat, prior: 0.2 });
+  ok(near(withPrior.offset, 0.21, 0.01) && withPrior.hitRate === 1, 'avec a priori : ' + withPrior.offset.toFixed(3) + ' s, ' + withPrior.hits + '/' + withPrior.n);
+});
+
+/* ================================================================== accordeur guidé */
+/** Note jouée à vide, entendue par un micro de téléphone (graves coupés, réverbération, bruit). */
+function pluck(s, cents, seed, o) {
   o = o || {};
-  const beat = 60 / sc.tempo, lat = o.lat != null ? o.lat : 0.11, t0 = 0.5, start = t0 + sc.countIn * beat;
-  const clicks = [];
-  for (let i = 0; i < sc.countIn; i++) clicks.push(t0 + i * beat);
-  for (let b = 0; b < sc.bars; b++) if (sc.clickBars[b]) for (let i = 0; i < sc.sig; i++) clicks.push(start + (b * sc.sig + i) * beat);
-  const y = new Float32Array(Math.ceil((start + sc.bars * sc.sig * beat + 1.6) * S.FS));
-  clicks.forEach((c, i) => S.addClick(y, c + lat, o.clickAmp || 0.08, 50 + i));
-  if (sc.pick) {
-    // arpèges : chaque note pincée seule, tenue jusqu'à la note suivante sur la même corde
-    sc.events.forEach((e, i) => {
-      if (o.skip && o.skip(e, i)) return;
-      const v = T.voicing(e.v), toks = e.tok.length > 1 && e.tok !== '.' ? [e.tok[0], e.tok[1]] : [e.tok];
-      toks.forEach((tk, k) => { const s = T.pickString(tk, v); if (s == null) return; S.addString(y, { t: start + lat + e.beat * beat + (o.sd || 0.008) * S.gauss(S.rng(i * 7 + k + 1)), midi: T.OPEN[s] + Math.max(0, v.frets[s]), amp: 0.13, seed: 200 + i * 3 + k }); });
-    });
-  } else {
-    const evs = [];
-    sc.events.forEach((e, i) => {
-      if (o.skip && o.skip(e, i)) return;
-      evs.push({ beat: sc.countIn + e.beat, k: e.k, frets: o.frets ? o.frets(e, i) : T.voicing(e.v).frets, late: o.late ? o.late(e, i) : 0, acc: e.acc });
-    });
-    (o.extra || []).forEach(b => evs.push({ beat: sc.countIn + b, k: 'D', frets: T.voicing(sc.seq[0]).frets }));
-    evs.sort((a, b) => a.beat - b.beat);
-    S.playGrid(y, evs, sc.tempo, t0 + lat, { sd: o.sd != null ? o.sd : 0.010, bias: o.bias || 0, seed: o.seed || 1, amp: o.amp || 0.16 });
-  }
-  if (o.voice) S.addVoice(y, o.voice.map(n => ({ t0: start + lat + n[0] * beat, t1: start + lat + n[1] * beat, midi: n[2] })), o.voiceAmp || 0.12, 4);
-  const pcm = S.room(y, { snr: o.snr != null ? o.snr : 32, seed: o.seed || 1, reverb: 0.1 });
-  return { pcm, spec: C.rhythmSpec(sc, start, clicks, 0.1), sc, lat };
+  const y = new Float32Array(Math.ceil((o.dur || 3.2) * S.FS));
+  S.addString(y, { t: 0.1, midi: T.OPEN[s], cents, amp: 0.15, seed, B: o.B });
+  if (o.second) S.addString(y, { t: o.second.t, midi: T.OPEN[s], cents: o.second.cents, amp: 0.15, seed: seed + 99 });
+  return S.room(y, { snr: o.snr != null ? o.snr : 30, seed, micHp: o.micHp || 200, reverb: 0.12 });
 }
-const ctx0 = St.ctx(St.newState(), null);
-function judgeRhythm(exId, params, take) {
-  const res = D.analyzeRhythm(take.pcm, S.FS, take.spec);
-  return { res, j: C.EX[exId].judge(res, params, ctx0, { score: take.sc }) };
+/** Comme l'app : une lecture toutes les 90 ms (trame de 8192), affichage stabilisé par tunerUpdate. */
+function tunerRun(x, s, from, to) {
+  const st = D.tunerState(), out = [];
+  for (let t = from || 0.15; t < (to || (x.length / S.FS - 0.2)); t += 0.09) {
+    const a = Math.round(t * S.FS); if (a + 8192 > x.length) break;
+    out.push({ t, shown: D.tunerUpdate(st, D.tuneString(x.subarray(a, a + 8192), S.FS, T.OPEN[s]), t) });
+  }
+  return out;
 }
-const scoreOf = (exId, params) => C.EX[exId].steps(params, ctx0).find(s => s.t === 'play').score;
 
-test('attaques : rappel ≥ 98 %, précision ≥ 96 %, erreur médiane ≤ 3 ms (36 prises, 12 rythmiques, 60–130 BPM)', () => {
-  let tp = 0, fn = 0, fp = 0; const errs = [];
-  const pats = ['r1', 'r2', 'r3', 'r4', 'r6', 'r7', 'r8', 'r9', 'r11', 'r12', 'r13', 'r14'];
-  for (let seed = 1; seed <= 36; seed++) {
-    const r = S.rng(seed * 977 + 1), pid = pats[seed % pats.length], pat = T.strum(pid);
-    const tempo = Math.round(62 + r() * 66 / (pat.sub === 4 ? 1.6 : 1)), beat = 60 / tempo, lat = 0.08 + 0.12 * r();
-    const ch = ['G', 'C', 'D', 'Em', 'Am', 'A', 'E', 'F', 'Cadd9', 'G-pop'][seed % 10];
-    const y = new Float32Array(Math.ceil((0.4 + (4 + 2 * pat.sig) * beat + 1.4) * S.FS));
-    for (let i = 0; i < 4 + 2 * pat.sig; i++) S.addClick(y, 0.4 + i * beat + lat, 0.05 + 0.05 * r(), seed * 50 + i);
-    const evs = []; for (let b = 0; b < 2; b++) for (const e of T.strumEvents(pat)) evs.push({ beat: 4 + b * pat.sig + e.beat, k: e.k, frets: T.voicing(ch).frets });
-    const times = S.playGrid(y, evs, tempo, 0.4 + lat, { sd: 0.012, seed, amp: 0.12 + 0.12 * r() });
-    const x = D.prepare(S.room(y, { snr: 30 + 15 * r(), seed, reverb: 0.08 + 0.1 * r() }), S.FS).x;
-    const ons = D.onsets(x, {}).list.map(o => o.t), used = new Set();
-    times.forEach(t => {
-      let bj = -1, bd = 1; ons.forEach((on, j) => { if (!used.has(j) && Math.abs(on - t) < 0.06 && Math.abs(on - t) < Math.abs(bd)) { bd = on - t; bj = j; } });
-      if (bj >= 0) { used.add(bj); tp++; errs.push(1000 * bd); } else fn++;
-    });
-    ons.forEach((on, j) => { if (!used.has(j) && on > times[0] - 0.1 && on < times[times.length - 1] + 0.3) fp++; });
-  }
-  const rec = tp / (tp + fn), prec = tp / (tp + fp), med = D.median(errs.map(Math.abs)), bias = D.median(errs);
-  ok(rec >= 0.98 && prec >= 0.96 && med <= 3 && Math.abs(bias) <= 2, 'rappel ' + rec.toFixed(3) + ', précision ' + prec.toFixed(3) + ', |erreur| médiane ' + med.toFixed(1) + ' ms, biais ' + bias.toFixed(1) + ' ms');
-});
-
-test('instants exacts sur une longue prise : pas de dérive entre le début et la fin (25 s)', () => {
-  // un joueur parfait pendant 24 mesures à 60 BPM : l'erreur mesurée ne doit pas grandir avec le temps
-  const sc = C.rhythmScore({ seq: ['Em'], tempo: 60, bars: 6, sub: 1 });
-  const tk = rhythmTake(sc, { sd: 0.0001, seed: 3 });
-  const res = D.analyzeRhythm(tk.pcm, S.FS, tk.spec);
-  const hits = res.events.filter(e => e.hit), first = D.median(hits.slice(0, 6).map(e => e.err)), last = D.median(hits.slice(-6).map(e => e.err));
-  ok(hits.length >= 23 && Math.abs(last - first) <= 3, 'début ' + first.toFixed(1) + ' ms, fin ' + last.toFixed(1) + ' ms (' + hits.length + ' coups)');
-});
-
-test('latence aller-retour mesurée sur les clics enregistrés à ±3 ms (60–300 ms)', () => {
-  for (const lat of [0.06, 0.11, 0.18, 0.3]) {
-    const sc = C.rhythmScore({ seq: ['G'], tempo: 90, bars: 2, sub: 1 });
-    const tk = rhythmTake(sc, { lat, seed: Math.round(lat * 100) });
-    const res = D.analyzeRhythm(tk.pcm, S.FS, tk.spec);
-    ok(res.latencySrc === 'mesurée' && near(res.latency, lat, 0.003), 'latence ' + lat + ' : mesurée ' + res.latency.toFixed(4) + ' (' + res.latencySrc + ')');
-  }
-});
-
-test('rythmiques bien jouées : réussies, sans coup en trop ni coup manqué (5 motifs, 2 joueurs)', () => {
-  for (const [p, tempo, seq] of [['r1', 76, ['Em']], ['r3', 92, ['G']], ['r4', 96, ['C', 'G']], ['r6', 72, ['Am']], ['r2', 110, ['D']]]) {
-    for (const seed of [1, 2]) {
-      const params = { p, tempo, seq, tol: 45 }, tk = rhythmTake(scoreOf('rythme', params), { seed, sd: 0.012 });
-      const { res, j } = judgeRhythm('rythme', params, tk);
-      ok(j.y === 1 && res.extras.length <= 1 && res.hitRate >= 0.95, p + ' ' + tempo + ' seed ' + seed + ' : y ' + j.y + ', coups ' + res.hitRate.toFixed(2) + ', en trop ' + res.extras.length + ', écart ' + res.mae.toFixed(1) + ' ms — ' + j.fb.map(f => f.text).join(' / '));
+test('accordeur guidé : 6 cordes désaccordées de −40 à +25 cents, cordes plus ou moins inharmoniques, micro de téléphone : affichage à ±3 cents, aucune erreur d’octave', () => {
+  let n = 0, bad = 0, worst = 0, stableN = 0;
+  for (let s = 0; s < 6; s++) for (const c of [-40, -12, 0, 7, 25]) for (const seed of [1, 2]) {
+    // micro : 320 Hz → la fondamentale du Mi grave presque disparue ; inharmonicité forte (harmoniques trop hautes)
+    const x = pluck(s, c, 10 * s + seed + (c + 40), { micHp: seed === 2 ? 320 : 200, B: seed === 2 ? 1.5e-4 : 6e-5 });
+    for (const r of tunerRun(x, s)) {
+      if (!r.shown || !r.shown.fresh || !r.shown.stable) continue;
+      const e = Math.abs(r.shown.cents - c); n++; stableN++;
+      if (e > 3) bad++;
+      worst = Math.max(worst, e);
     }
   }
+  ok(n > 600 && bad === 0 && worst < 3, n + ' lectures stables, ' + bad + ' à plus de 3 cents, pire ' + worst.toFixed(1) + ' c');
 });
 
-test('rythmique : coups en trop sur les silences et coups manqués repérés et expliqués', () => {
-  // Pop syncopée D.DU.UDU jouée avec un coup sur chaque « silence » (temps 1,5 et 3 → cases 2 et 5)
-  const params = { p: 'r4', tempo: 90, seq: ['G'], tol: 55 }, sc = scoreOf('rythme', params);
-  const extra = []; for (let b = 0; b < sc.bars; b++) extra.push(b * 4 + 0.5, b * 4 + 2);
-  const r1 = judgeRhythm('rythme', params, rhythmTake(sc, { extra, seed: 4 }));
-  ok(r1.res.extras.length >= 6 && r1.j.y < 1 && r1.j.fb.some(f => /en trop/.test(f.text)), 'en trop : ' + r1.res.extras.length + ' — ' + r1.j.fb.map(f => f.text).join(' / '));
-  // un coup sur quatre oublié
-  const r2 = judgeRhythm('rythme', params, rhythmTake(sc, { skip: (e, i) => i % 4 === 2, seed: 5 }));
-  ok(r2.res.hitRate <= 0.8 && r2.j.y < 1 && r2.j.fb.some(f => /manqu/.test(f.text)), 'manqués : ' + r2.res.hitRate.toFixed(2) + ' — ' + r2.j.fb.map(f => f.text).join(' / '));
+test('accordeur guidé : fin de note tenue (pas de dérive dans le bruit), nouvelle attaque prise en compte en moins de 0,5 s', () => {
+  const x = pluck(1, -30, 5, { dur: 6, second: { t: 3.2, cents: 2 } });
+  const run = tunerRun(x, 1);
+  const late = run.filter(r => r.t > 2.0 && r.t < 3.1);
+  ok(late.length && late.every(r => r.shown && !r.shown.fresh && near(r.shown.cents, -30, 3)), 'fin de la 1re note : ' + late.map(r => r.shown ? r.shown.cents.toFixed(1) + (r.shown.fresh ? '' : '·') : '—').join(' '));
+  const after = run.find(r => r.t > 3.2 && r.shown && r.shown.fresh && r.shown.stable && near(r.shown.cents, 2, 3));
+  ok(after && after.t - 3.2 < 0.5, 'nouvelle attaque (corde retendue) : ' + (after ? (after.t - 3.2).toFixed(2) + ' s' : 'jamais'));
 });
 
-test('joueur en retard de 70 ms : signalé, pas réussi ; en avance de 40 ms : signalé', () => {
-  const params = { p: 'r3', tempo: 88, seq: ['C'], tol: 45 }, sc = scoreOf('rythme', params);
-  const late = judgeRhythm('rythme', params, rhythmTake(sc, { bias: 0.07, seed: 6 }));
-  ok(late.res.mean > 55 && late.j.y < 1 && late.j.fb.some(f => /retard|tard/i.test(f.text)), 'retard : ' + late.res.mean.toFixed(0) + ' ms — ' + late.j.fb.map(f => f.text).join(' / '));
-  const early = judgeRhythm('rythme', params, rhythmTake(sc, { bias: -0.04, seed: 7 }));
-  ok(early.res.mean < -28 && early.j.fb.some(f => /avance/i.test(f.text)), 'avance : ' + early.res.mean.toFixed(0) + ' ms — ' + early.j.fb.map(f => f.text).join(' / '));
-});
-
-test('frappes étouffées (« chuck ») : reconnues ≥ 80 %, coups normaux pris pour des frappes ≤ 15 %', () => {
-  let xs = 0, xOk = 0, ds = 0, dFalse = 0;
-  for (const [p, tempo] of [['r7', 84], ['r8', 92], ['r9', 96], ['r12', 70]]) for (const seed of [1, 2, 3]) {
-    const params = { p, tempo, seq: ['Em'], tol: 55 }, { res } = judgeRhythm('rythme', params, rhythmTake(scoreOf('rythme', params), { seed: seed * 3 }));
-    res.events.filter(e => e.hit).forEach(e => { if (e.k === 'X') { xs++; if (e.chuck >= 0.5) xOk++; } else { ds++; if (e.chuck >= 0.5) dFalse++; } });
-  }
-  ok(xOk / xs >= 0.8 && dFalse / ds <= 0.15, 'frappes reconnues ' + xOk + '/' + xs + ', coups pris pour des frappes ' + dFalse + '/' + ds);
-});
-
-test('pulsation : tempo tenu dans le silence → réussi ; accélération de 5 % mesurée et expliquée', () => {
-  const params = { tempo: 80, sub: 1, silent: 2, tol: 45 }, sc = scoreOf('pulse', params);
-  const good = judgeRhythm('pulse', params, rhythmTake(sc, { seed: 8, sd: 0.012 }));
-  ok(good.j.y === 1 && good.res.drift && Math.abs(good.res.drift.tempoRatio - 1) < 0.02, 'tenu : y ' + good.j.y + ', tempo ×' + (good.res.drift && good.res.drift.tempoRatio.toFixed(3)) + ' — ' + good.j.fb.map(f => f.text).join(' / '));
-  // dans les mesures sans clic, chaque coup arrive 5 % plus tôt que le précédent
-  const beat = 60 / 80, silentFrom = 2 * 4;
-  const late = e => { const b = e.beat - silentFrom; return e.beat >= silentFrom && e.beat < silentFrom + 8 ? -0.05 * b * beat : 0; };
-  const fast = judgeRhythm('pulse', params, rhythmTake(sc, { seed: 9, late }));
-  const pct = (fast.res.drift.tempoRatio - 1) * 100;
-  ok(pct > 3.5 && pct < 6.5 && fast.j.y < 1 && fast.j.fb.some(f => /accélères/.test(f.text)), 'accélération mesurée ' + pct.toFixed(1) + ' % — ' + fast.j.fb.map(f => f.text).join(' / '));
-  ok(good.j.observe && near(good.j.observe.level, M.scale(good.res.sd, M.SCALES.timingSd), 1e-9), 'la régularité mesurée nourrit le niveau de pulsation');
-  ok(!fast.j.observe || fast.res.hitRate >= 0.8, 'pas d’observation de niveau sur une prise incomplète');
-});
-
-test('arpèges et Travis : notes à l’heure reconnues, réussis', () => {
-  for (const [p, v, tempo] of [['f1', 'C', 70], ['f3', 'G', 76], ['f4', 'C', 64]]) {
-    const params = { p, v, tempo }, tk = rhythmTake(scoreOf('picking', params), { seed: 11, sd: 0.008 });
-    const { res, j } = judgeRhythm('picking', params, tk);
-    ok(j.y === 1, p + ' ' + v + ' : y ' + j.y + ', notes ' + res.hitRate.toFixed(2) + ', en trop ' + res.extras.length + ', écart ' + (res.mae || 0).toFixed(1) + ' ms');
-  }
-});
-
-test('changements en rythme : bons accords au bon moment reconnus ; changement en retard repéré', () => {
-  const params = { seq: ['C', 'G'], bpc: 4, tempo: 80, strum: 'r1' }, sc = scoreOf('bascule', params);
-  const good = judgeRhythm('bascule', params, rhythmTake(sc, { seed: 12 }));
-  ok(good.j.y === 1 && good.res.chords.every(c => c.ok), 'propre : y ' + good.j.y + ' — ' + good.j.fb.map(f => f.text).join(' / '));
-  // le joueur reste sur l'accord précédent pendant toutes les mesures de Sol (il n'arrive pas à changer)
-  const stuck = judgeRhythm('bascule', params, rhythmTake(sc, { seed: 13, frets: e => T.voicing(e.v === 'G' ? 'C' : e.v).frets }));
-  ok(stuck.j.y < 1 && stuck.res.chords.filter(c => c.v === 'G').every(c => c.ok === false), 'accord pas changé : ' + JSON.stringify(stuck.res.chords.map(c => c.v + ':' + c.ok)));
-});
-
-test('chanter en jouant : la voix ne crée ni coup en trop ni coup manqué, la prise réussie est jugée réussie', () => {
-  const params = { p: 'r1', tempo: 72, seq: ['Em'], voice: 'chanter' }, ex = C.EX.chanter;
-  const stp = ex.steps(params, ctx0).find(s => s.t === 'play');
-  const notes = []; for (let b = 4; b < stp.score.bars * 4; b += 2) notes.push([b + 0.1, b + 1.8, 52 + (b % 5)]);
-  const tk = rhythmTake(stp.score, { seed: 14, voice: notes, voiceAmp: 0.18 });
-  const res = D.analyzeRhythm(tk.pcm, S.FS, tk.spec);
-  const tr = D.trackVoice(tk.pcm, S.FS, {}), share = D.voiceShare(tr, tk.spec.events[0].t + 4 * 60 / 72, tk.spec.events[tk.spec.events.length - 1].t);
-  res.voiceShare = share;
-  const j = ex.judge(res, params, ctx0, { score: tk.sc });
-  ok(res.hitRate >= 0.95 && res.extras.length <= 1, 'voix + guitare : coups ' + res.hitRate.toFixed(2) + ', en trop ' + res.extras.length);
-  ok(isFinite(share) && j.y === 1, 'y ' + j.y + ' — ' + j.fb.map(f => f.text).join(' / '));
-});
-
-/* ================================================================== analyse : accords */
-function renderChord(frets, seed, o) {
-  const y = new Float32Array(Math.ceil(1.4 * S.FS));
-  S.addStrum(y, Object.assign({ t: 0.3, frets, dir: 'D', amp: 0.15 + 0.05 * S.rng(seed)(), seed: seed * 13 + 1 }, o || {}));
-  return D.prepare(S.room(y, { snr: 32, seed }), S.FS).x;
-}
-function obsOf(x) { const t = (D.onsets(x, {}).list[0] || { t: 0.3 }).t; return D.observe(x, (t + 0.04) * FS, (t + 0.9) * FS); }
-
-test('accords reconnus parmi des accords proches ≥ 98 % (Do/Do7M, Ré/Ré sus4, Sol pop/Do add9…)', () => {
-  const SETS = [['C', 'G'], ['G', 'D'], ['Am', 'C'], ['Em', 'G'], ['D', 'A'], ['E', 'A'], ['Am', 'F'], ['Am', 'Dm'], ['C', 'Cmaj7'], ['G-pop', 'Cadd9'], ['Em7-pop', 'G-pop'], ['D', 'Dsus4'], ['Cadd9', 'Dsus4'], ['G', 'C', 'D', 'Em', 'Am', 'F-mini', 'A', 'E']];
-  let good = 0, n = 0; const bad = [];
-  for (const set of SETS) { const vs = set.map(id => T.voicing(id)); for (let seed = 1; seed <= 4; seed++) for (const v of vs) { const r = D.identify(obsOf(renderChord(v.frets, seed)), vs); n++; if (r.best === v.id) good++; else bad.push(v.id + '→' + r.best); } }
-  ok(good / n >= 0.98, good + '/' + n + ' : ' + bad.join(', '));
-});
-
-test('diagnostic : corde à vide au lieu d’une case, case voisine, corde à éviter qui sonne ; aucune fausse alarme', () => {
-  const cases = [['C', { wrong: { 4: -1 } }, 'open', 4], ['C', { wrong: { 2: -2 } }, 'open', 2], ['E', { wrong: { 2: -2 } }, 'open', 2], ['C', { wrong: { 1: 1 } }, 'fret+1', 1], ['A', { wrong: { 3: 1 } }, 'fret+1', 3], ['D', { strings: [1, 2, 3, 4, 5] }, 'mute', 1]];
-  for (const [id, o, kind, s] of cases) {
-    const v = T.voicing(id); let hit = 0;
-    for (let seed = 1; seed <= 4; seed++) {
-      const frets = o.strings ? v.frets.map((f, k) => (f < 0 && o.strings.includes(k) ? 0 : f)) : v.frets;
-      const dg = D.chordDiagnosis(obsOf(renderChord(frets, seed, { wrong: o.wrong })), v);
-      if (dg.foreign.some(f => f.kind === kind && f.s === s)) hit++;
-    }
-    ok(hit >= 3, id + ' ' + kind + ' corde ' + s + ' : repéré ' + hit + '/4');
-  }
-  let fa = 0, tot = 0; const which = [];
-  for (const id of ['C', 'G', 'D', 'A', 'E', 'Am', 'Em', 'Dm', 'E7', 'A7', 'D7', 'G7', 'Am7', 'Cmaj7', 'Fmaj7', 'F-mini', 'Asus2', 'Dsus2', 'Dsus4', 'Cadd9', 'G-pop', 'Em7-pop', 'B7', 'Bm', 'F']) {
-    const v = T.voicing(id);
-    for (let seed = 1; seed <= 4; seed++) { const dg = D.chordDiagnosis(obsOf(renderChord(v.frets, seed)), v); tot++; if (dg.foreign.length) { fa++; which.push(id); } }
-  }
-  ok(fa <= 1, 'fausses alarmes sur des accords propres : ' + fa + '/' + tot + ' ' + which.join(','));
-});
-
-test('changements en une minute : compte exact sur des prises propres (6 paires, 30–70 changements/min)', () => {
-  for (const [a, b, cpm] of [['C', 'G', 30], ['Am', 'C', 50], ['G-pop', 'Cadd9', 70], ['D', 'A', 55], ['Em', 'G', 40], ['E', 'Am', 45]]) {
-    const va = T.voicing(a), vb = T.voicing(b), dur = 20, gap = 60 / cpm, r = S.rng(cpm);
-    const y = new Float32Array(Math.ceil((dur + 1.5) * S.FS)); let t = 0.6, k = 0;
-    while (t < dur) { const nt = t + gap * (0.85 + 0.3 * r()); S.addStrum(y, { t, frets: (k % 2 ? vb : va).frets, dir: 'D', amp: 0.14 + 0.06 * r(), seed: 100 + k, ends: new Array(6).fill(nt) }); t = nt; k++; }
-    const res = D.analyzeChanges(S.room(y, { snr: 32, seed: 2 }), S.FS, { a, b, t0: 0.3, t1: dur + 0.5 });
-    ok(res.changes === k - 1 && res.unclear === 0, a + '/' + b + ' : ' + res.changes + ' changements mesurés pour ' + (k - 1));
-  }
-});
-
-test('changements : un accord mal formé (doigt une case trop haut) ne compte pas', () => {
-  const va = T.voicing('C'), vb = T.voicing('G'), y = new Float32Array(Math.ceil(17 * S.FS));
-  let t = 0.6; const bad = [3, 6, 11];
-  for (let k = 0; k < 14; k++) {
-    // Do avec l'annulaire une case trop haut (Do♯ sur la corde de La) ; Sol avec Sol♯ sur le Mi aigu
-    const wrong = bad.includes(k) ? (k % 2 ? { 5: 1 } : { 1: 1 }) : null;
-    S.addStrum(y, { t, frets: (k % 2 ? vb : va).frets, wrong, dir: 'D', amp: 0.16, seed: 300 + k, ends: new Array(6).fill(t + 1.1) }); t += 1.1;
-  }
-  const res = D.analyzeChanges(S.room(y, { snr: 32, seed: 5 }), S.FS, { a: 'C', b: 'G', t0: 0.3, t1: 16.5 });
-  // un seul coup d'une seconde : la case voisine est repérée dans la grande majorité des cas, jamais inventée
-  const falseAlarm = res.strums.filter((z, i) => !bad.includes(i) && z.foreign.length).length;
-  ok(res.flawed >= 2 && falseAlarm === 0 && res.changes <= 13 - res.flawed, 'mal formés repérés ' + res.flawed + '/3, fausses alarmes ' + falseAlarm + ', changements comptés ' + res.changes);
-  const j = C.EX.minute.judge(res, { a: 'C', b: 'G', sec: 30, target: 40 }, ctx0);
-  ok(j.fb.some(f => /pas propre/.test(f.text)), j.fb.map(f => f.text).join(' / '));
-});
-
-test('corde par corde : accords propres reconnus, corde étouffée, fausse note et corde sautée repérées', () => {
-  function plucks(id, seed, err) {
-    err = err || {};
-    const v = T.voicing(id), r = S.rng(seed * 7 + 3), strings = T.sounding(v), gap = 0.55 + 0.35 * r();
-    const y = new Float32Array(Math.ceil((0.5 + strings.length * gap + 1.2) * S.FS)); let t = 0.5;
-    strings.forEach(s => {
-      if (err.skip === s) { t += gap; return; }
-      S.addString(y, { t, midi: T.OPEN[s] + v.frets[s] + ((err.wrong && err.wrong[s]) || 0), amp: 0.12 + 0.08 * r(), muted: err.muted === s, seed: seed * 31 + s });
-      t += gap * (0.85 + 0.3 * r());
-    });
-    return D.analyzePlucks(S.room(y, { snr: 34, seed }), S.FS, { v: id });
-  }
-  let clean = 0, n = 0;
-  for (const id of ['C', 'G', 'D', 'A', 'E', 'Am', 'Em', 'Dm', 'F-mini', 'Cadd9', 'G-pop', 'B7', 'F', 'Bm']) for (const seed of [1, 2]) { n++; if (plucks(id, seed).clean) clean++; }
-  ok(clean === n, 'accords propres reconnus ' + clean + '/' + n);
-  for (const [id, err, want] of [['C', { muted: 2 }, 'muted@2'], ['G', { muted: 3 }, 'muted@3'], ['D', { muted: 5 }, 'muted@5'], ['C', { wrong: { 4: -1 } }, 'wrong@4'], ['E', { wrong: { 3: 1 } }, 'wrong@3'], ['C', { skip: 2 }, 'missing@2']]) {
-    const res = plucks(id, 4, err), got = res.strings.filter(s => s.status !== 'ok').map(s => s.status + '@' + s.s);
-    ok(got.length === 1 && got[0] === want, id + ' ' + JSON.stringify(err) + ' : ' + (got.join(',') || 'propre'));
-  }
-  const res = plucks('C', 5, { muted: 4 }), j = C.EX.propre.judge(res, { v: 'C' }, ctx0);
-  ok(j.y === 0.5 && j.fb.some(f => /Si \(2\) est étouffée/.test(f.text)), j.fb.map(f => f.text).join(' / '));
-});
-
-test('accordeur : bonne corde, ±3 cents dès 0,6 s après l’attaque (médiane < 1) ; les 6 cordes d’un seul coup à ±2 cents', () => {
-  const errs = [];
-  for (let seed = 1; seed <= 3; seed++) for (let s = 0; s < 6; s++) for (const det of [-30, -8, 0, 5, 20]) {
-    const y = new Float32Array(Math.ceil(3 * S.FS)); S.addString(y, { t: 0.2, midi: T.OPEN[s], cents: det, amp: 0.15, seed: seed * 17 + s });
-    const x = S.room(y, { snr: 35, seed });
-    for (const tt of [0.3, 0.8, 1.2, 2.0]) {
-      const a = Math.round(tt * S.FS), r = D.tune(x.subarray(a, a + 4096), S.FS);
-      ok(r.string === s, 'corde ' + s + ' prise pour ' + r.string);
-      if (tt >= 0.8) errs.push(r.cents - det); else ok(Math.abs(r.cents - det) <= 6, 'juste après l’attaque : ' + (r.cents - det).toFixed(1) + ' c');
-    }
-  }
-  ok(D.median(errs.map(Math.abs)) <= 1 && Math.max(...errs.map(Math.abs)) <= 3, 'mono : médiane ' + D.median(errs.map(Math.abs)).toFixed(2) + ' c, max ' + Math.max(...errs.map(Math.abs)).toFixed(2));
-  const perr = [];
-  for (let seed = 1; seed <= 6; seed++) {
-    const r = S.rng(seed * 7919 + 13); r(); const dets = [0, 1, 2, 3, 4, 5].map(() => Math.round((r() - 0.5) * 50));
-    const y = new Float32Array(Math.ceil(3 * S.FS)); S.addStrum(y, { t: 0.3, frets: [0, 0, 0, 0, 0, 0], dir: 'D', amp: 0.15, seed, cents: Object.fromEntries(dets.map((d, i) => [i, d])) });
-    const res = D.polyTune(S.room(y, { snr: 35, seed }), S.FS);
-    res.forEach((o, i) => { ok(o.cents != null, 'corde ' + i + ' non mesurée'); perr.push(o.cents - dets[i]); });
-  }
-  ok(Math.max(...perr.map(Math.abs)) <= 2, 'six cordes : erreur max ' + Math.max(...perr.map(Math.abs)).toFixed(2) + ' c');
-});
-
-test('accords de mémoire : bon accord et temps de réaction à ±15 ms, accord faux repéré', () => {
-  const vocab = ['C', 'G', 'D', 'Am', 'Em', 'E', 'A'].map(id => T.voicing(id));
-  const cues = [], y = new Float32Array(Math.ceil(16 * S.FS)), lat = 0.13, ids = ['G', 'Am', 'D', 'C', 'Em', 'A'], rts = [];
-  let t = 1.0;
-  ids.forEach((id, i) => { const rt = 0.9 + 0.08 * i, played = i === 3 ? 'Am' : id; S.addStrum(y, { t: t + lat + rt, frets: T.voicing(played).frets, dir: 'D', amp: 0.16, seed: 40 + i }); S.addClick(y, t + lat, 0.1, 70 + i); cues.push({ t, v: id, limit: 2 }); rts.push(rt); t += 2.4; });
-  const res = D.analyzeCues(S.room(y, { snr: 33, seed: 4 }), S.FS, { cues, clicks: cues.map(c => c.t), latency: 0.1, vocab });
-  res.cues.forEach((c, i) => {
-    ok(c.hit && near(c.rt, rts[i], 0.015), c.v + ' : temps ' + c.rt + ' s pour ' + rts[i].toFixed(2));
-    ok(c.ok === (i !== 3), c.v + ' : ' + (c.ok ? 'reconnu' : 'pas reconnu (' + c.heard + ')'));
-  });
-});
-
-test('mélodie fredonnée sur la grille : notes retrouvées, notes de l’accord sur les temps forts', () => {
-  const melody = [[0.5, 1.0, 64], [1.0, 1.5, 67], [1.5, 2.4, 72], [2.5, 3.0, 71], [3.0, 3.5, 67], [3.5, 4.4, 62], [4.5, 5.0, 69], [5.0, 5.5, 72], [5.5, 6.4, 76], [6.5, 7.0, 77], [7.0, 7.5, 72], [7.5, 8.4, 69]];
-  const y = new Float32Array(Math.ceil(9.5 * S.FS));
-  S.addVoice(y, melody.map(([t0, t1, m]) => ({ t0, t1, midi: m - 12 })), 0.2, 3);
-  ['C', 'G', 'Am', 'F-mini'].forEach((id, i) => { for (let b = 0; b < 2; b++) S.addStrum(y, { t: 0.5 + i * 2 + b, frets: T.voicing(id).frets, dir: 'D', amp: 0.03, seed: 10 + i * 2 + b }); });
-  const notes = D.segmentNotes(D.trackVoice(S.room(y, { snr: 35, seed: 2 }), S.FS));
-  ok(notes.length === 12 && notes.every((n, i) => Math.round(n.midi) === melody[i][2] - 12), 'notes : ' + notes.map(n => T.noteName(n.midi)).join(' '));
-  const st = D.melodyVsChords(notes, ['C', 'G', 'Am', 'F'].map((sym, i) => ({ t0: 0.5 + i * 2, t1: 2.5 + i * 2, sym })), [0, 1, 2, 3, 4, 5, 6, 7].map(i => 0.5 + i));
-  ok(st.strongRatio === 1, 'temps forts sur des notes de l’accord : ' + st.strongRatio);
-});
-
-/* ================================================================== guitare de synthèse de l'app */
-test('guitare de l’app : chaque note juste à ±1 cent (mesurée par l’accordeur de l’app)', () => {
+test('guitare de l’app : chaque note juste à ±1 cent (mesurée par l’accordeur guidé)', () => {
   let worst = 0;
-  for (const m of [40, 45, 47, 50, 52, 55, 57, 59, 62, 64, 67, 69, 72, 76]) for (const c of [0, 13]) {
+  for (const m of [40, 45, 50, 55, 59, 64]) for (const c of [0, 13, -9]) {
     const y = G.note(m + c / 100, { sr: 32000, vel: 0.8 });
-    for (const t of [0.3, 0.9]) { const a = Math.round(t * 32000), r = D.tune(y.subarray(a, a + 4096), 32000); worst = Math.max(worst, Math.abs(100 * (r.midi - m) - c)); }
+    for (const t of [0.3, 0.9]) { const a = Math.round(t * 32000), r = D.tuneString(y.subarray(a, a + 8192), 32000, m); ok(r, 'note ' + m + ' non mesurée'); worst = Math.max(worst, Math.abs(r.cents - c)); }
   }
   ok(worst <= 1, 'erreur max ' + worst.toFixed(2) + ' c');
-});
-
-test('clic aigu : moins de 3 % de son énergie dans la bande d’analyse de la guitare (< 6 kHz)', () => {
-  for (const sr of [44100, 48000]) {
-    const c = G.click('aigu', true, sr), N = 4096, re = new Float64Array(N), im = new Float64Array(N);
-    for (let i = 0; i < Math.min(N, c.length); i++) re[i] = c[i];
-    D.fft(re, im);
-    let lo = 0, hi = 0; for (let k = 1; k < N / 2; k++) { const f = k * sr / N, p = re[k] * re[k] + im[k] * im[k]; if (f < 6000) lo += p; else hi += p; }
-    ok(lo / (lo + hi) < 0.03, sr + ' Hz : ' + (100 * lo / (lo + hi)).toFixed(2) + ' %');
-  }
-});
-
-test('accords joués par l’app reconnus par l’analyse de l’app', () => {
-  const V = ['C', 'G', 'D', 'Am', 'Em', 'E', 'A', 'Cadd9', 'G-pop', 'Dsus4'].map(id => T.voicing(id));
-  for (const v of V) {
-    const evs = T.voicingNotes(v).map((n, s) => (n == null ? null : { t: 0.2 + s * 0.006, midi: n, vel: 0.8, string: s })).filter(Boolean);
-    const x = D.prepare(G.render(evs, 1.6, 32000), 32000).x;
-    const r = D.identify(D.observe(x, 0.3 * FS, 1.2 * FS), V.filter(w => w.id === v.id || w.sym !== v.sym));
-    ok(r.best === v.id, v.id + ' reconnu comme ' + r.best);
-  }
 });
 
 /* ================================================================== exercices */
@@ -417,7 +236,7 @@ function stateAt(level, week) {
   if (week) s.program.start = St.today(Date.now() - (week - 1) * 7 * DAY);
   return s;
 }
-test('chaque exercice : candidats, difficulté finie, étapes, libellé, jugement sans mesure (débutant et avancé)', () => {
+test('chaque exercice : candidats, difficulté finie, étapes connues, libellé, jugement sans mesure (débutant et avancé)', () => {
   for (const [lvl, week] of [['debut', 1], ['avance', 12]]) {
     const s = stateAt(lvl, week), ctx = St.ctx(s, { block: P.block(week).n });
     for (const ex of C.EXERCISES) {
@@ -428,15 +247,64 @@ test('chaque exercice : candidats, difficulté finie, étapes, libellé, jugemen
         const d = ex.difficulty(p, ctx);
         ok(isFinite(d), ex.id + ' : difficulté non finie ' + JSON.stringify(p));
         const steps = ex.steps(p, ctx);
-        ok(steps.length && steps.every(st => ['show', 'listen', 'wait', 'play', 'quiz', 'song', 'compose'].includes(st.t)), ex.id + ' : étapes');
+        ok(steps.length && steps.every(st => C.STEP_TYPES.includes(st.t)), ex.id + ' : étapes ' + steps.map(st => st.t));
         ok(typeof ex.label(p, ctx) === 'string', ex.id + ' : libellé');
-        const play = steps.find(st => st.t === 'play');
-        if (play && play.score) ok(play.score.events.length > 0 && play.score.bars > 0, ex.id + ' : partition vide');
+        for (const st of steps.filter(x => x.score)) ok(st.score.events.length > 0 && st.score.bars > 0, ex.id + ' : partition vide');
+        for (const st of steps.filter(x => x.t === 'check')) ok(st.items.length >= 2 && st.items.every(k => C.CRIT[k]), ex.id + ' : critères');
+        if (steps.some(x => x.t === 'along')) ok(ex.rec, ex.id + ' : prise jouée, enregistrable (rec)');
       }
-      const j = ex.judge(null, cands[0], ctx, {});
+      const j = ex.judge(null, cands[0], ctx);
       ok(j && j.y == null, ex.id + ' : sans mesure, pas de verdict inventé');
     }
   }
+});
+
+test('jugements : corde par corde, chrono, compte, critères, accord retrouvé — verdict, retour précis, records et poids', () => {
+  const s = stateAt('chansons', 3), ctx = St.ctx(s, { block: 1 });
+  // corde par corde : une corde étouffée → presque, avec le doigt à corriger
+  const strings = [0, 1, 2, 3, 4, 5].filter(i => T.voicing('C').frets[i] >= 0).map(i => ({ s: i, status: i === 4 ? 'muted' : 'ok' }));
+  const jp = C.EX.propre.judge({ strings: { strings } }, { v: 'C' }, ctx);
+  ok(jp.y === 0.5 && jp.w === C.W.strings && jp.fb.some(f => /Si \(2\) est étouffée\. Doigt 1/.test(f.text)) && jp.chord.clean === false, 'corde par corde : ' + JSON.stringify(jp.fb));
+  const jb = C.EX.propre.judge({ strings: { strings: strings.map(x => Object.assign({}, x, { status: x.s === 2 ? 'buzz' : 'ok' })) } }, { v: 'C' }, ctx);
+  ok(jb.y === 0.5 && jb.fb.some(f => /Ré \(4\) frise\. Rapproche le doigt 2/.test(f.text)), 'frise : ' + JSON.stringify(jb.fb));
+  // de mémoire, au chrono
+  const jf = C.EX.forme.judge({ cues: [{ v: 'C', rt: 1.4, clean: true }, { v: 'G', rt: 2.9, clean: true }, { v: 'Am', rt: 1.1, clean: true }, { v: 'D', rt: 1.8, clean: false }] }, { chords: ['C', 'G', 'Am', 'D'], limit: 2.5 }, ctx);
+  ok(jf.y === 0.5 && jf.w === C.W.timed && jf.forms.length === 3 && jf.fb.some(f => /G : propre, mais en 2,9 s/.test(f.text)) && jf.fb.some(f => /D : pas encore propre/.test(f.text)), 'chrono : ' + JSON.stringify(jf.fb));
+  // une minute : le compte, l'objectif, le record
+  St.pairUpdate(s, 'C', 'G', 30);
+  const ctx2 = St.ctx(s, { block: 1 }), jm = C.EX.minute.judge({ count: { count: 19, sec: 30 } }, { a: 'C', b: 'G', sec: 30, target: 36 }, ctx2);
+  ok(jm.y === 1 && near(jm.pair.cpm, 38, 0.01) && jm.w === C.W.count && jm.fb.some(f => /Nouveau record sur cette paire \(avant : 30\/min\)/.test(f.text)) && jm.observe, 'une minute : ' + JSON.stringify(jm.fb));
+  // critères : 2 sur 3 → presque, conseil sur le critère manquant
+  const chk = { items: ['heure', 'trou', 'propre'], chosen: ['heure', 'propre'], y: C.checkY(3, 2), listened: true };
+  const jc = C.EX.bascule.judge({ check: chk }, { seq: ['C', 'G'], bpc: 4, tempo: 80, strum: 'r1' }, ctx);
+  ok(jc.y === 0.5 && jc.w === C.W.self && jc.fb.some(f => f.text === C.CRIT.trou[1]) && jc.fb.some(f => /réécouté/.test(f.text)) && !jc.rhythmPair, 'critères : ' + JSON.stringify(jc.fb));
+  ok(C.checkY(3, 3) === 1 && C.checkY(3, 1) === 0 && C.checkY(2, 1) === 0.5 && C.checkY(4, 3) === 0.5, 'barème des critères');
+  // rythmique : motif tapé réussi + guitare « presque » → deux parties, chacune avec son poids
+  const sc = C.rhythmScore({ strum: 'r3', seq: ['Em'], bpc: 4, tempo: 84, bars: 4 }), ex = K.expected(sc, 2);
+  const tp = K.analyze(S.tapper(ex.events, { offset: 0.05, sd: 0.01, seed: 1 }), ex.events, { slot: ex.slot, beat: ex.beat });
+  const jr = C.EX.rythme.judge({ taps: tp, check: { items: C.strumChecks('r3'), chosen: ['bras', 'clic'], y: 0.5 } }, { p: 'r3', tempo: 84, seq: ['Em'], tol: 45 }, ctx);
+  ok(jr.parts.length === 2 && jr.parts[0].y === 1 && jr.parts[0].w === C.W.taps && jr.parts[1].y === 0.5 && jr.parts[1].w === C.W.guitar && jr.y === 1 && jr.pattern, 'rythmique : ' + JSON.stringify(jr.parts) + ' → ' + jr.y);
+  ok(C.strumChecks('r2').join() === 'bras,clic' && C.strumChecks('r7').join() === 'bras,silences,frappe,clic', 'critères selon le motif');
+  // accord retrouvé à l'oreille : réponses justes ou fausses
+  const jl = C.EX.releve.judge({ choices: [{ ok: true, answer: 'G', got: 'G' }, { ok: false, answer: 'Em', got: 'C' }, { ok: true, answer: 'C', got: 'C' }] }, { key: 7, set: ['G', 'C', 'Em'] }, ctx);
+  ok(jl.y === 0.5 && jl.w === C.W.quiz && jl.fb.some(f => /C’était Em \(vi\), pas C/.test(f.text)), 'accord retrouvé : ' + JSON.stringify(jl.fb));
+});
+
+test('poids : une auto-évaluation compte moitié moins qu’une mesure ; les deux parties d’une rythmique comptent', () => {
+  const mk = () => { const s = St.newState(); St.applyStart(s, 'debut'); return s; };
+  const a = mk(), b = mk(), th0 = a.skills.changements.th;
+  St.recordTake(a, { ex: 'minute', params: {}, d: th0, judged: { y: 1, success: true, w: 1 } });
+  St.recordTake(b, { ex: 'bascule', params: {}, d: th0, judged: { y: 1, success: true, w: C.W.self } });
+  const ga = a.skills.changements.th - th0, gb = b.skills.changements.th - th0;
+  ok(ga > 0 && near(gb / ga, 0.5, 0.05), 'gains : mesure ' + ga.toFixed(3) + ', auto-évaluation ' + gb.toFixed(3));
+  const c = mk(), d = mk(), r0 = c.skills.rythmiques.th;
+  St.recordTake(c, { ex: 'rythme', params: { p: 'r1', tempo: 80 }, d: r0, judged: { y: 1, success: true, parts: [{ y: 1, w: 1 }] } });
+  St.recordTake(d, { ex: 'rythme', params: { p: 'r1', tempo: 80 }, d: r0, judged: { y: 1, success: true, parts: [{ y: 1, w: 1 }, { y: 1, w: 0.4 }] } });
+  ok(d.skills.rythmiques.th > c.skills.rythmiques.th && d.items.rythme.n === 1, 'deux parties : ' + c.skills.rythmiques.th.toFixed(3) + ' → ' + d.skills.rythmiques.th.toFixed(3));
+  // le délai du téléphone mesuré sur les tapes est retenu (moyenne glissante)
+  St.recordTake(c, { ex: 'pulse', params: {}, d: 2, judged: { y: 1, success: true, tapOffset: 0.1 } });
+  St.recordTake(c, { ex: 'pulse', params: {}, d: 2, judged: { y: 1, success: true, tapOffset: 0.2 } });
+  ok(near(c.profile.tapOffset, 0.13, 1e-9), 'délai retenu : ' + c.profile.tapOffset);
 });
 
 test('difficulté choisie au plus près de la cible (point de défi : ~80 % de réussite)', () => {
@@ -456,7 +324,7 @@ test('oreille fine (ZEST) : seuil estimé à ±45 % pour des auditeurs simulés 
       for (let i = 0; i < 20; i++) { const c = C.zest.next(z), p = 0.5 + 0.47 * (1 - Math.exp(-Math.pow(c / (truth / 0.8714), 2.2))); C.zest.update(z, c, r() < p); }
       ests.push(C.zest.estimate(z).threshold);
     }
-    const med = D.median(ests);
+    const med = K.median(ests);
     ok(med / truth < 1.45 && truth / med < 1.45, 'seuil vrai ' + truth + ' c, estimé ' + med.toFixed(1) + ' c');
   }
 });
@@ -502,7 +370,7 @@ test('« prête à jouer » : accord inconnu d’abord, puis le changement le pl
   ok(r3.bottleneck && r3.bottleneck.kind === 'section', 'il reste à jouer la chanson en entier : ' + JSON.stringify(r3.bottleneck));
   St.recordTake(s, { ex: 'chanson', params: {}, d: 3, judged: { y: 1, success: true, song: { id: song.id, sec: 0, ratio: 1, mode: 'r3', ok: true } } });
   const r4 = St.readiness(s, song);
-  ok(!r4.bottleneck && r4.score > 0.85 && r4.score < 0.95, 'accords pas encore vérifiés propres au micro : ' + r4.score);
+  ok(!r4.bottleneck && r4.score > 0.85 && r4.score < 0.95, 'accords pas encore vérifiés corde par corde : ' + r4.score);
   ['G', 'Em', 'C', 'D'].forEach(id => St.chordUpdate(s, id, { clean: true }));
   const r5 = St.readiness(s, song);
   ok(r5.score > 0.97 && !r5.bottleneck, 'tout en place : ' + r5.score + ' ' + JSON.stringify(r5.bottleneck));
@@ -521,27 +389,13 @@ test('chanson : accords écrits sous « Capo N » = formes ; capo conseillé, tr
   const info2 = St.songInfo(song);
   ok(info2.realChords.join(' ') === 'F C Dm Bb' && info2.capo === 5 && syms(info2) === 'C G Am F', 'transposé : ' + info2.realChords.join(' ') + ' capo ' + info2.capo + ' ' + syms(info2));
   ok(info.sections[0].bars.length === 4 && info.sections[0].bars.every(b => b.length === 1), 'mesures : ' + JSON.stringify(info.sections[0].bars));
-  // la séance « Ma chanson » joue le modèle et écoute au micro avec le capo
+  // la séance « Ma chanson » joue le modèle avec le capo, et tu joues la section avec le clic, capo compris
   const s = St.newState(); St.applyStart(s, 'chansons'); s.songs.push(song); s.workSong = song.id; song.capo = 3; song.transpose = 0;
   const ctx = St.ctx(s, null), p = C.EX.chanson.candidates(ctx)[0], st = C.EX.chanson.steps(p, ctx);
-  ok(st.find(x => x.t === 'play').score.capo === 3 && st.find(x => x.t === 'listen').play.capo === 3 && /Capo en case 3/.test(st[0].sub), 'capo dans la séance');
+  ok(st.find(x => x.t === 'along').score.capo === 3 && st.find(x => x.t === 'listen').play.capo === 3 && /Capo en case 3/.test(st[0].sub) && st.find(x => x.t === 'along').save, 'capo dans la séance');
 });
 
-test('capo : un Do joué capo 2 est reconnu comme Do-forme avec capo, et un capo oublié est détecté', () => {
-  // la grille attend Do et Sol (formes) capo 2 : le joueur a bien le capo → les accords sonnent Ré et La
-  const sc = C.rhythmScore({ strum: 'r1', seq: ['C', 'G'], bpc: 4, tempo: 84, bars: 4, capo: 2 });
-  const withCapo = rhythmTake(sc, { seed: 21, frets: e => T.withCapo(T.voicing(e.v), 2).frets });
-  const r1 = D.analyzeRhythm(withCapo.pcm, S.FS, withCapo.spec);
-  ok(r1.chords.every(c => c.ok) && r1.capoHeard == null, 'capo 2 attendu et joué : ' + JSON.stringify(r1.chords.map(c => c.v + ':' + c.ok)));
-  // même grille sans capo attendu, mais le joueur a laissé son capo en case 2 : détecté et pris en compte
-  const sc0 = C.rhythmScore({ strum: 'r1', seq: ['C', 'G'], bpc: 4, tempo: 84, bars: 4 });
-  const forgot = rhythmTake(sc0, { seed: 22, frets: e => T.withCapo(T.voicing(e.v), 2).frets });
-  const r2 = D.analyzeRhythm(forgot.pcm, S.FS, forgot.spec);
-  ok(r2.capoHeard === 2 && r2.chords.every(c => c.ok), 'capo oublié : ' + r2.capoHeard + ' ' + JSON.stringify(r2.chords.map(c => c.v + ':' + c.ok)));
-  ok(C.recordingIssues(r2).some(f => /capo en case 2/.test(f.text)), 'le capo entendu est signalé');
-});
-
-test('sauvegarde : export/import identique, migration d’un état ancien, données de l’app Corde lues', () => {
+test('sauvegarde : export/import identique, migration d’un état ancien, version 1 → 2 (records du micro remis à zéro, niveaux gardés), données de l’app Corde lues', () => {
   const s = stateAt('chansons', 3);
   St.pairUpdate(s, 'C', 'G', 33);
   const back = St.importJSON(St.exportJSON(s));
@@ -551,6 +405,15 @@ test('sauvegarde : export/import identique, migration d’un état ancien, donn�
   const old = { created: 1, profile: { name: 'Ana' }, skills: {}, vocab: ['Em'] };
   const m = St.migrate(old);
   ok(m.profile.name === 'Ana' && m.profile.sessionMin === 20 && M.COMPS.every(c => m.skills[c.id]) && Array.isArray(m.sessions), 'migration');
+  // version 1 : records venus du micro (pas fiables) remis à zéro ; vocabulaire, oreille, cartes et chansons gardés
+  const v1 = { v: 1, created: 1, profile: { name: 'Léa', click: 'aigu', mic: true }, skills: { accords: { th: 4.2, sd: 0.6, n: 30, last: 0, hist: [] }, oreille: { th: 5, sd: 0.5, n: 12, last: 0, hist: [] } }, vocab: ['Em', 'G', 'C'], chords: { Em: { intro: '2026-01-01', n: 5, clean: 1, form: 1.2 }, G: { intro: '2026-01-02', n: 2, clean: 0.6, form: 2.1, declared: true } }, pairs: { 'Em|G': { n: 3, best: 41, ema: 38, hist: [] } }, patterns: { r3: { n: 2, best: 96 } }, chant: { r3: { n: 1, best: 80 } }, cards: { c1: { s: 3 } }, sessions: [{ id: 'x', date: '2026-01-02', takes: [] }], series: { timingSd: [['2026-01-02', 20]], cpm: [['2026-01-02', 41]], jnd: [['2026-01-02', 12]] }, songs: [{ id: 'a', title: 'T', text: 'G C', progress: { 0: 0.8 } }], ideas: [{ id: 'i1' }] };
+  const m2 = St.migrate(JSON.parse(JSON.stringify(v1)));
+  ok(m2.v === 2 && !Object.keys(m2.pairs).length && !Object.keys(m2.patterns).length && !Object.keys(m2.chant).length, 'records du micro remis à zéro');
+  ok(m2.chords.Em.clean == null && m2.chords.Em.form == null && m2.chords.Em.intro === '2026-01-01' && m2.chords.G.declared, 'accords : intro gardée, mesures effacées');
+  ok(m2.vocab.join() === 'Em,G,C' && m2.cards.c1 && m2.songs[0].text === 'G C' && !Object.keys(m2.songs[0].progress).length && m2.ideas.length === 1 && m2.sessions.length === 1, 'vocabulaire, cartes, chansons, idées, séances gardés');
+  ok(m2.skills.accords.th === 4.2 && m2.skills.accords.sd >= 1.5 && m2.skills.oreille.sd === 0.5, 'niveaux gardés, incertains pour ce qui venait du micro');
+  ok(!m2.series.timingSd && !m2.series.cpm && m2.series.jnd.length === 1 && m2.profile.click === 'bois' && m2.notice === 'v2', 'séries, clic, message');
+  ok(St.migrate(JSON.parse(JSON.stringify(m2))).pairs && St.migrate(m2).notice === 'v2', 'migration idempotente');
   const store = { 'corde.done': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'corde.log': [{ day: 10, date: '2026-01-10', ok: 3, ko: 1 }], 'corde.records': { a: 1 } };
   const cd = St.readCorde(k => store[k] || null);
   ok(cd && cd.days === 10 && cd.suggest === 'chansons', 'Corde : ' + JSON.stringify(cd));
@@ -586,6 +449,8 @@ test('plan du jour : un accord nouveau au plus, pas de barré si gêne, repos si
   }
   const g = P.plan(s, { date: d0, checkin: { form: 3, tips: 'ok', pain: 'gene' }, rand: S.rng(3) });
   ok(g.noBarre && !g.items.some(it => ['barre', 'barre-rythme'].includes(it.ex)) && g.minutes < 16, 'gêne : ' + g.items.map(it => it.ex).join(','));
+  const bil = p0.items.map(it => it.ex);
+  ok(['forme', 'minute', 'pulse', 'rythme', 'discri', 'degres'].every(id => bil.includes(id)) && !bil.includes('chanter') && p0.items.find(it => it.ex === 'rythme').ladder.every(l => l.tapOnly), 'bilan : mesures fiables seulement (' + bil.join(',') + ')');
   const pain = P.plan(s, { date: d0, checkin: { form: 3, tips: 'ok', pain: 'douleur' } });
   ok(pain.type === 'R' && pain.items.every(it => C.EX[it.ex].kind === 'quiz'), 'douleur : ' + pain.items.map(it => it.ex).join(','));
   s.deadline = { date: d0, label: 'Anniversaire', song: s.workSong };
@@ -620,11 +485,16 @@ test('programme de 16 semaines sur un élève simulé : difficulté à ~70–80 
         else { const it = s.items[ex.id], p = !it || it.n < 2 ? Math.max(plan.targetP, 0.86) : plan.targetP; const ch = C.choose(ex, M.dFor(s.skills[ex.comp].th, p), ctx, rnd); ok(ch, 'aucun candidat pour ' + ex.id + ' (jour ' + day + ')'); params = ch.params; d = ch.d; }
         ok(isFinite(d) && ex.steps(params, ctx).length, ex.id + ' : paramètres invalides ' + JSON.stringify(params));
         exCount[ex.id] = (exCount[ex.id] || 0) + 1;
-        const pt = M.pSuccess(truth[ex.comp], d), u = rnd(), y = u < pt ? 1 : u < pt + (1 - pt) / 2 ? 0.5 : 0;
-        const judged = ex.kind === 'play' || (ex.kind === 'quiz' && ex.id !== 'cartes' && ex.id !== 'discri') ? { y, success: y === 1, metrics: {} } : { y: null, success: null };
+        // l'élève simulé réussit selon son vrai niveau ; ses auto-évaluations sont parfois trop indulgentes
+        const pt = M.pSuccess(truth[ex.comp], d), draw = () => { const u = rnd(); return u < pt ? 1 : u < pt + (1 - pt) / 2 ? 0.5 : 0; };
+        const optimist = v => (rnd() < 0.25 ? Math.min(1, v + 0.5) : v);
+        let y = draw();
+        if (ex.measure === 'self' || ex.measure === 'strings') y = optimist(y);
+        const judged = ex.kind === 'play' || (ex.kind === 'quiz' && ex.id !== 'cartes' && ex.id !== 'discri') ? { y, success: y === 1, w: C.W[ex.measure] || 1, metrics: {} } : { y: null, success: null };
+        if (ex.id === 'rythme') { judged.parts = [{ y, w: C.W.taps }].concat(params.tapOnly ? [] : [{ y: optimist(draw()), w: C.W.guitar }]); judged.y = C.combine(judged.parts); judged.success = judged.y === 1; }
         if (ex.id === 'minute' && judged.y != null) judged.pair = { a: params.a, b: params.b, cpm: C.cpmAt(T.transitionCost(params.a, params.b), truth.changements) * (0.85 + 0.3 * rnd()) };
         if ((ex.id === 'propre' || ex.id === 'barre') && judged.y != null) judged.chord = { id: params.v, clean: y === 1 };
-        if (ex.id === 'rythme' && y === 1) judged.pattern = { id: params.p, tempo: params.tempo };
+        if (ex.id === 'rythme' && judged.y === 1) judged.pattern = { id: params.p, tempo: params.tempo };
         if (ex.id === 'chanter' && y === 1) judged.chant = { p: params.p, tempo: params.tempo };
         if (ex.id === 'chanson' && judged.y != null) judged.song = { id: params.song, sec: params.sec, ratio: params.ratio, mode: params.mode, ok: y === 1 };
         if (judged.y != null) { graded++; if (judged.success) succ++; }
